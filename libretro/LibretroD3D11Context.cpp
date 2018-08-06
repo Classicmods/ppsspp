@@ -35,7 +35,7 @@ void LibretroD3D11Context::CreateDrawContext() {
 	ID3D11DeviceContext1 *context1 = nullptr;
 	d3d11_->context->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&context1);
 
-	draw_ = Draw::T3DCreateD3D11Context(d3d11_->device, d3d11_->context, device1, context1, d3d11_->featureLevel, NULL);
+	draw_ = Draw::T3DCreateD3D11Context(d3d11_->device, d3d11_->context, device1, context1, d3d11_->featureLevel, NULL, 0);
 }
 
 void LibretroD3D11Context::DestroyDrawContext() {
