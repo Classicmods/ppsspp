@@ -315,7 +315,6 @@ SOURCES_CXX += $(NATIVEDIR)/math/dataconv.cpp \
 	       $(COREDIR)/Config.cpp \
 	       $(COREDIR)/TextureReplacer.cpp \
 	       $(COREDIR)/Core.cpp \
-	       $(COREDIR)/Replay.cpp \
 	       $(COREDIR)/WaveFile.cpp \
 	       $(COREDIR)/FileLoaders/HTTPFileLoader.cpp \
 	       $(COREDIR)/FileLoaders/CachingFileLoader.cpp \
