@@ -215,6 +215,7 @@ SOURCES_CXX += \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/preprocessor/PpContext.cpp \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/preprocessor/PpScanner.cpp \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/preprocessor/PpTokens.cpp \
+	$(EXTDIR)/glslang/glslang/MachineIndependent/attribute.cpp \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/Constant.cpp \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/InfoSink.cpp \
 	$(EXTDIR)/glslang/glslang/MachineIndependent/Initialize.cpp \
