@@ -1,4 +1,5 @@
 
+#include "Core/ConfigValues.h"
 #include "libretro/LibretroD3D11Context.h"
 #include "thin3d/d3d11_loader.h"
 #include <d3d11_1.h>
@@ -17,10 +18,7 @@ bool LibretroD3D11Context::Init() {
 }
 
 void LibretroD3D11Context::CreateDrawContext() {
-	if (!Libretro::environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&d3d11_) || !d3d11_) {
-		ERROR_LOG(G3D, "Failed to get HW rendering interface!\n");
-		return;
-	}
+   std::vector<std::string> adapterNames;
 
 	if (d3d11_->interface_version != RETRO_HW_RENDER_INTERFACE_D3D11_VERSION) {
 		ERROR_LOG(G3D, "HW render interface mismatch, expected %u, got %u!\n", RETRO_HW_RENDER_INTERFACE_D3D11_VERSION, d3d11_->interface_version);
@@ -35,7 +33,7 @@ void LibretroD3D11Context::CreateDrawContext() {
 	ID3D11DeviceContext1 *context1 = nullptr;
 	d3d11_->context->QueryInterface(__uuidof(ID3D11DeviceContext1), (void **)&context1);
 
-	draw_ = Draw::T3DCreateD3D11Context(d3d11_->device, d3d11_->context, device1, context1, d3d11_->featureLevel, NULL, 0);
+	draw_ = Draw::T3DCreateD3D11Context(d3d11_->device, d3d11_->context, device1, context1, d3d11_->featureLevel, NULL, adapterNames);
 }
 
 void LibretroD3D11Context::DestroyDrawContext() {

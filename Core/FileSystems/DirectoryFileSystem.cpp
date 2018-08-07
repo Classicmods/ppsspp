@@ -606,7 +606,11 @@ u32 DirectoryFileSystem::OpenFile(std::string filename, FileAccess access, const
 		err = SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND;
 	}
 
+#ifdef __MINGW32__
+	err = ReplayApplyDisk((ReplayAction)FILE_OPEN, err, CoreTiming::GetGlobalTimeUs());
+#else
 	err = ReplayApplyDisk(ReplayAction::FILE_OPEN, err, CoreTiming::GetGlobalTimeUs());
+#endif
 	if (err != 0) {
 #ifdef _WIN32
 		ERROR_LOG(FILESYS, "DirectoryFileSystem::OpenFile: FAILED, %i - access = %i", GetLastError(), (int)access);

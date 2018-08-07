@@ -16,10 +16,10 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include <cstring>
-#include <ctime>
 #include <vector>
 #include "Common/Common.h"
 #include "Common/FileUtil.h"
+#include <ctime>
 #include "Common/StringUtils.h"
 #include "Core/Replay.h"
 #include "Core/FileSystems/FileSystem.h"
