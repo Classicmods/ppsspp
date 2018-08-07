@@ -18,6 +18,11 @@ bool LibretroD3D11Context::Init() {
 }
 
 void LibretroD3D11Context::CreateDrawContext() {
+   if (!Libretro::environ_cb(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, (void **)&d3d11_) || !d3d11_) {
+      ERROR_LOG(G3D, "Failed to get HW rendering interface!\n");
+      return;
+   }
+   
    std::vector<std::string> adapterNames;
 
 	if (d3d11_->interface_version != RETRO_HW_RENDER_INTERFACE_D3D11_VERSION) {
