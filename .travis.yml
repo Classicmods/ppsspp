@@ -42,7 +42,7 @@ matrix:
     - os: linux
       compiler: "gcc"
       env: PPSSPP_BUILD_TYPE=Linux
-           APP_ABI=armeabihf-v7a
+           APP_ABI=armeabi-v7a
            LIBRETRO=TRUE
            platform=classic_armv8_a35
            
