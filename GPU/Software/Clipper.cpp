@@ -21,6 +21,7 @@
 
 #include "GPU/Software/Clipper.h"
 #include "GPU/Software/Rasterizer.h"
+#include "GPU/Software/RasterizerRectangle.h"
 
 #include "profiler/profiler.h"
 
@@ -49,39 +50,36 @@ static inline int CalcClipMask(const ClipCoords& v)
 	return mask;
 }
 
-#define AddInterpolatedVertex(t, out, in, numVertices) \
-{ \
-	Vertices[numVertices]->Lerp(t, *Vertices[out], *Vertices[in]); \
-	numVertices++; \
+inline bool different_signs(float x, float y) {
+	return ((x <= 0 && y > 0) || (x > 0 && y <= 0));
 }
 
-#define DIFFERENT_SIGNS(x,y) ((x <= 0 && y > 0) || (x > 0 && y <= 0))
-
-#define CLIP_DOTPROD(I, A, B, C, D) \
-	(Vertices[I]->clippos.x * A + Vertices[I]->clippos.y * B + Vertices[I]->clippos.z * C + Vertices[I]->clippos.w * D)
+inline float clip_dotprod(const VertexData &vert, float A, float B, float C, float D) {
+	return (vert.clippos.x * A + vert.clippos.y * B + vert.clippos.z * C + vert.clippos.w * D);
+}
 
 #define POLY_CLIP( PLANE_BIT, A, B, C, D )							\
 {																	\
 	if (mask & PLANE_BIT) {											\
 		int idxPrev = inlist[0];									\
-		float dpPrev = CLIP_DOTPROD(idxPrev, A, B, C, D );			\
+		float dpPrev = clip_dotprod(*Vertices[idxPrev], A, B, C, D );\
 		int outcount = 0;											\
 																	\
 		inlist[n] = inlist[0];										\
 		for (int j = 1; j <= n; j++) { 								\
 			int idx = inlist[j];									\
-			float dp = CLIP_DOTPROD(idx, A, B, C, D );				\
+			float dp = clip_dotprod(*Vertices[idx], A, B, C, D );	\
 			if (dpPrev >= 0) {										\
 				outlist[outcount++] = idxPrev;						\
 			}														\
 																	\
-			if (DIFFERENT_SIGNS(dp, dpPrev)) {						\
+			if (different_signs(dp, dpPrev)) {						\
 				if (dp < 0) {										\
 					float t = dp / (dp - dpPrev);					\
-					AddInterpolatedVertex(t, idx, idxPrev, numVertices);		\
+					Vertices[numVertices++]->Lerp(t, *Vertices[idx], *Vertices[idxPrev]);		\
 				} else {											\
 					float t = dpPrev / (dpPrev - dp);				\
-					AddInterpolatedVertex(t, idxPrev, idx, numVertices);		\
+					Vertices[numVertices++]->Lerp(t, *Vertices[idxPrev], *Vertices[idx]);		\
 				}													\
 				outlist[outcount++] = numVertices - 1;				\
 			}														\
@@ -104,25 +102,23 @@ static inline int CalcClipMask(const ClipCoords& v)
 
 #define CLIP_LINE(PLANE_BIT, A, B, C, D)						\
 {																\
-	if (mask & PLANE_BIT) {											\
-		float dp0 = CLIP_DOTPROD(0, A, B, C, D );				\
-		float dp1 = CLIP_DOTPROD(1, A, B, C, D );				\
-		int i = 0;												\
+	if (mask & PLANE_BIT) {										\
+		float dp0 = clip_dotprod(*Vertices[0], A, B, C, D );	\
+		float dp1 = clip_dotprod(*Vertices[1], A, B, C, D );	\
+		int numVertices = 0;												\
 																\
 		if (mask0 & PLANE_BIT) {								\
 			if (dp0 < 0) {										\
 				float t = dp1 / (dp1 - dp0);					\
-				i = 0;											\
-				AddInterpolatedVertex(t, 1, 0, i);				\
+				Vertices[0]->Lerp(t, *Vertices[1], *Vertices[0]); \
 			}													\
 		}														\
-		dp0 = CLIP_DOTPROD(0, A, B, C, D );						\
+		dp0 = clip_dotprod(*Vertices[0], A, B, C, D );			\
 																\
 		if (mask1 & PLANE_BIT) {								\
 			if (dp1 < 0) {										\
 				float t = dp1 / (dp1- dp0);						\
-				i = 1;											\
-				AddInterpolatedVertex(t, 1, 0, i);				\
+				Vertices[1]->Lerp(t, *Vertices[1], *Vertices[0]);	\
 			}													\
 		}														\
 	}															\
@@ -176,12 +172,17 @@ void ProcessRect(const VertexData& v0, const VertexData& v1)
 		}
 
 		// Four triangles to do backfaces as well. Two of them will get backface culled.
-		ProcessTriangle(*topleft, *topright, *bottomright);
-		ProcessTriangle(*bottomright, *topright, *topleft);
-		ProcessTriangle(*bottomright, *bottomleft, *topleft);
-		ProcessTriangle(*topleft, *bottomleft, *bottomright);
+		ProcessTriangle(*topleft, *topright, *bottomright, buf[3]);
+		ProcessTriangle(*bottomright, *topright, *topleft, buf[3]);
+		ProcessTriangle(*bottomright, *bottomleft, *topleft, buf[3]);
+		ProcessTriangle(*topleft, *bottomleft, *bottomright, buf[3]);
 	} else {
 		// through mode handling
+
+		if (Rasterizer::RectangleFastPath(v0, v1)) {
+			return;
+		}
+
 		VertexData buf[4];
 		buf[0].screenpos = ScreenCoords(v0.screenpos.x, v0.screenpos.y, v1.screenpos.z);
 		buf[0].texturecoords = v0.texturecoords;
@@ -196,7 +197,7 @@ void ProcessRect(const VertexData& v0, const VertexData& v1)
 
 		// Color and depth values of second vertex are used for the whole rectangle
 		buf[0].color0 = buf[1].color0 = buf[2].color0 = buf[3].color0;
-		buf[0].color1 = buf[1].color1 = buf[2].color1 = buf[3].color1;
+		buf[0].color1 = buf[1].color1 = buf[2].color1 = buf[3].color1;  // is color1 ever used in through mode?
 		buf[0].clippos.w = buf[1].clippos.w = buf[2].clippos.w = buf[3].clippos.w = 1.0f;
 		buf[0].fogdepth = buf[1].fogdepth = buf[2].fogdepth = buf[3].fogdepth = 1.0f;
 
@@ -271,10 +272,17 @@ void ProcessLine(VertexData& v0, VertexData& v1)
 	Rasterizer::DrawLine(data[0], data[1]);
 }
 
-void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2)
-{
+void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2, const VertexData &provoking) {
 	if (gstate.isModeThrough()) {
-		Rasterizer::DrawTriangle(v0, v1, v2);
+		// In case of cull reordering, make sure the right color is on the final vertex.
+		if (gstate.getShadeMode() == GE_SHADE_FLAT) {
+			VertexData corrected2 = v2;
+			corrected2.color0 = provoking.color0;
+			corrected2.color1 = provoking.color1;
+			Rasterizer::DrawTriangle(v0, v1, corrected2);
+		} else {
+			Rasterizer::DrawTriangle(v0, v1, v2);
+		}
 		return;
 	}
 
@@ -339,14 +347,19 @@ void ProcessTriangle(VertexData& v0, VertexData& v1, VertexData& v2)
 		return;
 	}
 
-	for (int i = 0; i+3 <= numIndices; i+=3)
-	{
-		if(indices[i] != SKIP_FLAG)
-		{
+	for (int i = 0; i + 3 <= numIndices; i += 3) {
+		if (indices[i] != SKIP_FLAG) {
 			VertexData data[3] = { *Vertices[indices[i]], *Vertices[indices[i+1]], *Vertices[indices[i+2]] };
 			data[0].screenpos = TransformUnit::ClipToScreen(data[0].clippos);
 			data[1].screenpos = TransformUnit::ClipToScreen(data[1].clippos);
 			data[2].screenpos = TransformUnit::ClipToScreen(data[2].clippos);
+
+			if (gstate.getShadeMode() == GE_SHADE_FLAT) {
+				// So that the order of clipping doesn't matter...
+				data[2].color0 = provoking.color0;
+				data[2].color1 = provoking.color1;
+			}
+
 			Rasterizer::DrawTriangle(data[0], data[1], data[2]);
 		}
 	}

@@ -27,6 +27,7 @@
 #include "math/lin/matrix4x4.h"
 #include "math/math_util.h"
 #include "math/dataconv.h"
+#include "thin3d/thin3d.h"
 #include "util/text/utf8.h"
 
 #include "Common/Common.h"
@@ -40,6 +41,8 @@
 #include "GPU/Directx9/ShaderManagerDX9.h"
 #include "GPU/Directx9/DrawEngineDX9.h"
 #include "GPU/Directx9/FramebufferDX9.h"
+
+using namespace Lin;
 
 namespace DX9 {
 
@@ -240,14 +243,18 @@ void ShaderManagerDX9::VSSetMatrix(int creg, const float* pMatrix) {
 static void ConvertProjMatrixToD3D(Matrix4x4 &in, bool invertedX, bool invertedY) {
 	// Half pixel offset hack
 	float xoff = 1.0f / gstate_c.curRTRenderWidth;
-	xoff = gstate_c.vpXOffset + (invertedX ? xoff : -xoff);
-	float yoff = -1.0f / gstate_c.curRTRenderHeight;
-	yoff = gstate_c.vpYOffset + (invertedY ? yoff : -yoff);
+	if (invertedX) {
+		xoff = -gstate_c.vpXOffset - xoff;
+	} else {
+		xoff = gstate_c.vpXOffset - xoff;
+	}
 
-	if (invertedX)
-		xoff = -xoff;
-	if (invertedY)
-		yoff = -yoff;
+	float yoff = -1.0f / gstate_c.curRTRenderHeight;
+	if (invertedY) {
+		yoff = gstate_c.vpYOffset - yoff;
+	} else {
+		yoff = -gstate_c.vpYOffset - yoff;
+	}
 
 	const Vec3 trans(xoff, yoff, gstate_c.vpZOffset * 0.5f + 0.5f);
 	const Vec3 scale(gstate_c.vpWidthScale, gstate_c.vpHeightScale, gstate_c.vpDepthScale * 0.5f);
@@ -499,7 +506,8 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 	}
 }
 
-ShaderManagerDX9::ShaderManagerDX9(LPDIRECT3DDEVICE9 device) : device_(device), lastVShader_(nullptr), lastPShader_(nullptr) {
+ShaderManagerDX9::ShaderManagerDX9(Draw::DrawContext *draw, LPDIRECT3DDEVICE9 device)
+	: ShaderManagerCommon(draw), device_(device), lastVShader_(nullptr), lastPShader_(nullptr) {
 	codeBuffer_ = new char[16384];
 }
 
@@ -554,7 +562,7 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 	FShaderID FSID;
 	if (gstate_c.IsDirty(DIRTY_FRAGMENTSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_FRAGMENTSHADER_STATE);
-		ComputeFragmentShaderID(&FSID);
+		ComputeFragmentShaderID(&FSID, draw_->GetBugs());
 	} else {
 		FSID = lastFSID_;
 	}
@@ -580,7 +588,7 @@ VSShader *ShaderManagerDX9::ApplyShader(int prim, u32 vertType) {
 		vs = new VSShader(device_, VSID, codeBuffer_, useHWTransform);
 
 		if (vs->Failed()) {
-			I18NCategory *gr = GetI18NCategory("Graphics");
+			auto gr = GetI18NCategory("Graphics");
 			ERROR_LOG(G3D, "Shader compilation failed, falling back to software transform");
 			if (!g_Config.bHideSlowWarnings) {
 				host->NotifyUserMessage(gr->T("hardware transform error - falling back to software"), 2.5f, 0xFF3030FF);

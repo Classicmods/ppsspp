@@ -1,16 +1,9 @@
-#if !defined(__APPLE__)
 #include "SDL_syswm.h"
-#endif
 #include "SDL.h"
 
 #include "thin3d/GLRenderManager.h"
 #include "gfx/gl_common.h"
 #include "Common/GraphicsContext.h"
-
-// TODO: Move this to a better place.
-#if defined(USING_EGL)
-int8_t EGL_Open();
-#endif
 
 class SDLGLGraphicsContext : public DummyGraphicsContext {
 public:
@@ -32,7 +25,7 @@ public:
 	}
 
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {
@@ -54,5 +47,3 @@ private:
 	SDL_GLContext glContext = nullptr;
 	GLRenderManager *renderManager_ = nullptr;
 };
-
-

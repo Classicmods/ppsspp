@@ -6,13 +6,16 @@
 // Currently supports: Android, Linux, Windows, Mac OSX
 
 #include <QApplication>
-#include <QUrl>
-#include <QDir>
+#include <QClipboard>
 #include <QDesktopWidget>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
 #include <QLocale>
 #include <QScreen>
 #include <QThread>
+#include <QUrl>
 
 #include "ext/glslang/glslang/Public/ShaderLang.h"
 
@@ -29,19 +32,71 @@
 #endif
 #include "QtMain.h"
 #include "gfx_es2/gpu_features.h"
+#include "i18n/i18n.h"
 #include "math/math_util.h"
 #include "thread/threadutil.h"
+#include "util/text/utf8.h"
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
+#include "Core/HW/Camera.h"
 
 #include <string.h>
 
-MainUI *emugl = NULL;
-static int refreshRate = 60000;
+MainUI *emugl = nullptr;
+static float refreshRate = 60.f;
+static int browseFileEvent = -1;
+static int browseFolderEvent = -1;
+QTCamera *qtcamera = nullptr;
 
 #ifdef SDL
+static SDL_AudioDeviceID audioDev = 0;
+
 extern void mixaudio(void *userdata, Uint8 *stream, int len) {
 	NativeMix((short *)stream, len / 4);
+}
+
+static void InitSDLAudioDevice() {
+	SDL_AudioSpec fmt, ret_fmt;
+	memset(&fmt, 0, sizeof(fmt));
+	fmt.freq = 44100;
+	fmt.format = AUDIO_S16;
+	fmt.channels = 2;
+	fmt.samples = 2048;
+	fmt.callback = &mixaudio;
+	fmt.userdata = nullptr;
+
+	audioDev = 0;
+	if (!g_Config.sAudioDevice.empty()) {
+		audioDev = SDL_OpenAudioDevice(g_Config.sAudioDevice.c_str(), 0, &fmt, &ret_fmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+		if (audioDev <= 0) {
+			WLOG("Failed to open preferred audio device %s", g_Config.sAudioDevice.c_str());
+		}
+	}
+	if (audioDev <= 0) {
+		audioDev = SDL_OpenAudioDevice(nullptr, 0, &fmt, &ret_fmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+	}
+	if (audioDev <= 0) {
+		ELOG("Failed to open audio: %s", SDL_GetError());
+	} else {
+		if (ret_fmt.samples != fmt.samples) // Notify, but still use it
+			ELOG("Output audio samples: %d (requested: %d)", ret_fmt.samples, fmt.samples);
+		if (ret_fmt.freq != fmt.freq || ret_fmt.format != fmt.format || ret_fmt.channels != fmt.channels) {
+			ELOG("Sound buffer format does not match requested format.");
+			ELOG("Output audio freq: %d (requested: %d)", ret_fmt.freq, fmt.freq);
+			ELOG("Output audio format: %d (requested: %d)", ret_fmt.format, fmt.format);
+			ELOG("Output audio channels: %d (requested: %d)", ret_fmt.channels, fmt.channels);
+			ELOG("Provided output format does not match requirement, turning audio off");
+			SDL_CloseAudioDevice(audioDev);
+		}
+		SDL_PauseAudioDevice(audioDev, 0);
+	}
+}
+
+static void StopSDLAudioDevice() {
+	if (audioDev > 0) {
+		SDL_PauseAudioDevice(audioDev, 1);
+		SDL_CloseAudioDevice(audioDev);
+	}
 }
 #endif
 
@@ -55,12 +110,34 @@ std::string System_GetProperty(SystemProperty prop) {
 #elif defined(_WIN32)
 		return "Qt:Windows";
 #elif defined(Q_OS_MAC)
-		return "Qt:Mac";
+		return "Qt:macOS";
 #else
 		return "Qt";
 #endif
 	case SYSPROP_LANGREGION:
 		return QLocale::system().name().toStdString();
+	case SYSPROP_CLIPBOARD_TEXT:
+		return QApplication::clipboard()->text().toStdString();
+#if defined(SDL)
+	case SYSPROP_AUDIO_DEVICE_LIST:
+		{
+			std::string result;
+			for (int i = 0; i < SDL_GetNumAudioDevices(0); ++i) {
+				const char *name = SDL_GetAudioDeviceName(i, 0);
+				if (!name) {
+					continue;
+				}
+
+				if (i == 0) {
+					result = name;
+				} else {
+					result.append(1, '\0');
+					result.append(name);
+				}
+			}
+			return result;
+		}
+#endif
 	default:
 		return "";
 	}
@@ -70,8 +147,6 @@ int System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
 		return 44100;
-	case SYSPROP_DISPLAY_REFRESH_RATE:
-		return refreshRate;
 	case SYSPROP_DEVICE_TYPE:
 #if defined(__ANDROID__)
 		return DEVICE_TYPE_MOBILE;
@@ -84,6 +159,21 @@ int System_GetPropertyInt(SystemProperty prop) {
 #else
 		return DEVICE_TYPE_DESKTOP;
 #endif
+	case SYSPROP_DISPLAY_COUNT:
+		return QApplication::screens().size();
+	default:
+		return -1;
+	}
+}
+
+float System_GetPropertyFloat(SystemProperty prop) {
+	switch (prop) {
+	case SYSPROP_DISPLAY_REFRESH_RATE:
+		return refreshRate;
+	case SYSPROP_DISPLAY_LOGICAL_DPI:
+		return QApplication::primaryScreen()->logicalDotsPerInch();
+	case SYSPROP_DISPLAY_DPI:
+		return QApplication::primaryScreen()->physicalDotsPerInch();
 	default:
 		return -1;
 	}
@@ -92,6 +182,8 @@ int System_GetPropertyInt(SystemProperty prop) {
 bool System_GetPropertyBool(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_HAS_BACK_BUTTON:
+		return true;
+	case SYSPROP_HAS_FILE_BROWSER:
 		return true;
 	case SYSPROP_APP_GOLD:
 #ifdef GOLD
@@ -107,6 +199,28 @@ bool System_GetPropertyBool(SystemProperty prop) {
 void System_SendMessage(const char *command, const char *parameter) {
 	if (!strcmp(command, "finish")) {
 		qApp->exit(0);
+	} else if (!strcmp(command, "browse_file")) {
+		QCoreApplication::postEvent(emugl, new QEvent((QEvent::Type)browseFileEvent));
+	} else if (!strcmp(command, "browse_folder")) {
+		QCoreApplication::postEvent(emugl, new QEvent((QEvent::Type)browseFolderEvent));
+	} else if (!strcmp(command, "graphics_restart")) {
+		// Should find a way to properly restart the app.
+		qApp->exit(0);
+	} else if (!strcmp(command, "camera_command")) {
+		if (!strncmp(parameter, "startVideo", 10)) {
+			int width = 0, height = 0;
+			sscanf(parameter, "startVideo_%dx%d", &width, &height);
+			emit(qtcamera->onStartCamera(width, height));
+		} else if (!strcmp(parameter, "stopVideo")) {
+			emit(qtcamera->onStopCamera());
+		}
+	} else if (!strcmp(command, "setclipboardtext")) {
+		QApplication::clipboard()->setText(parameter);
+#if defined(SDL)
+	} else if (!strcmp(command, "audio_resetDevice")) {
+		StopSDLAudioDevice();
+		InitSDLAudioDevice();
+#endif
 	}
 }
 
@@ -129,19 +243,13 @@ void Vibrate(int length_ms) {
 		length_ms = 25;
 }
 
+void OpenDirectory(const char *path) {
+	// Unsupported
+}
+
 void LaunchBrowser(const char *url)
 {
 	QDesktopServices::openUrl(QUrl(url));
-}
-
-float CalculateDPIScale()
-{
-	// Sane default rather than check DPI
-#if defined(USING_GLES2)
-	return 1.2f;
-#else
-	return 1.0f;
-#endif
 }
 
 static int mainInternal(QApplication &a) {
@@ -161,34 +269,15 @@ static int mainInternal(QApplication &a) {
 	SDLJoystick joy(true);
 	joy.registerEventHandler();
 	SDL_Init(SDL_INIT_AUDIO);
-	SDL_AudioSpec fmt, ret_fmt;
-	memset(&fmt, 0, sizeof(fmt));
-	fmt.freq = 44100;
-	fmt.format = AUDIO_S16;
-	fmt.channels = 2;
-	fmt.samples = 2048;
-	fmt.callback = &mixaudio;
-	fmt.userdata = (void *)0;
-
-	if (SDL_OpenAudio(&fmt, &ret_fmt) < 0) {
-		ELOG("Failed to open audio: %s", SDL_GetError());
-	} else {
-		if (ret_fmt.samples != fmt.samples) // Notify, but still use it
-			ELOG("Output audio samples: %d (requested: %d)", ret_fmt.samples, fmt.samples);
-		if (ret_fmt.freq != fmt.freq || ret_fmt.format != fmt.format || ret_fmt.channels != fmt.channels) {
-			ELOG("Sound buffer format does not match requested format.");
-			ELOG("Output audio freq: %d (requested: %d)", ret_fmt.freq, fmt.freq);
-			ELOG("Output audio format: %d (requested: %d)", ret_fmt.format, fmt.format);
-			ELOG("Output audio channels: %d (requested: %d)", ret_fmt.channels, fmt.channels);
-			ELOG("Provided output format does not match requirement, turning audio off");
-			SDL_CloseAudio();
-		}
-	}
-	SDL_PauseAudio(0);
+	InitSDLAudioDevice();
 #else
 	QScopedPointer<MainAudio> audio(new MainAudio());
 	audio->run();
 #endif
+
+	browseFileEvent = QEvent::registerEventType();
+	browseFolderEvent = QEvent::registerEventType();
+
 	int retval = a.exec();
 	delete emugl;
 	return retval;
@@ -226,9 +315,8 @@ void MainUI::EmuThreadJoin() {
 	emuThread = std::thread();
 }
 
-MainUI::MainUI(QWidget *parent):
-	QGLWidget(parent)
-{
+MainUI::MainUI(QWidget *parent)
+	: QGLWidget(parent) {
 	emuThreadState = (int)EmuThreadState::DISABLED;
 	setAttribute(Qt::WA_AcceptTouchEvents);
 #if QT_VERSION < QT_VERSION_CHECK(5, 0, 0)
@@ -243,8 +331,7 @@ MainUI::MainUI(QWidget *parent):
 	startTimer(16);
 }
 
-MainUI::~MainUI()
-{
+MainUI::~MainUI() {
 	ILOG("MainUI::Destructor");
 	if (emuThreadState != (int)EmuThreadState::DISABLED) {
 		ILOG("EmuThreadStop");
@@ -263,107 +350,148 @@ MainUI::~MainUI()
 	graphicsContext = nullptr;
 }
 
-QString MainUI::InputBoxGetQString(QString title, QString defaultValue)
-{
-    bool ok;
-    QString text = QInputDialog::getText(this, title, title, QLineEdit::Normal, defaultValue, &ok);
-    if (!ok)
-        text = QString();
-    return text;
+QString MainUI::InputBoxGetQString(QString title, QString defaultValue) {
+	bool ok;
+	QString text = QInputDialog::getText(this, title, title, QLineEdit::Normal, defaultValue, &ok);
+	if (!ok)
+		text = QString();
+	return text;
 }
 
-void MainUI::resizeGL(int w, int h)
-{
-    if (UpdateScreenScale(w, h)) {
-        NativeMessageReceived("gpu_resized", "");
-    }
-    xscale = w / this->width();
-    yscale = h / this->height();
+void MainUI::resizeGL(int w, int h) {
+	if (UpdateScreenScale(w, h)) {
+		NativeMessageReceived("gpu_resized", "");
+	}
+	xscale = w / this->width();
+	yscale = h / this->height();
 
-    PSP_CoreParameter().pixelWidth = pixel_xres;
-    PSP_CoreParameter().pixelHeight = pixel_yres;
+	PSP_CoreParameter().pixelWidth = pixel_xres;
+	PSP_CoreParameter().pixelHeight = pixel_yres;
 }
 
-void MainUI::timerEvent(QTimerEvent *)
-{
-    updateGL();
-    emit newFrame();
+void MainUI::timerEvent(QTimerEvent *) {
+	updateGL();
+	emit newFrame();
 }
 
-void MainUI::changeEvent(QEvent *e)
-{
-    QGLWidget::changeEvent(e);
-    if(e->type() == QEvent::WindowStateChange)
-        Core_NotifyWindowHidden(isMinimized());
+void MainUI::changeEvent(QEvent *e) {
+	QGLWidget::changeEvent(e);
+	if (e->type() == QEvent::WindowStateChange)
+		Core_NotifyWindowHidden(isMinimized());
 }
 
-bool MainUI::event(QEvent *e)
-{
-    TouchInput input;
-    QList<QTouchEvent::TouchPoint> touchPoints;
-    switch(e->type())
-    {
-    case QEvent::TouchBegin:
-    case QEvent::TouchUpdate:
-    case QEvent::TouchEnd:
-        touchPoints = static_cast<QTouchEvent *>(e)->touchPoints();
-        foreach (const QTouchEvent::TouchPoint &touchPoint, touchPoints) {
-            switch (touchPoint.state()) {
-            case Qt::TouchPointStationary:
-                break;
-            case Qt::TouchPointPressed:
-            case Qt::TouchPointReleased:
-                input.x = touchPoint.pos().x() * g_dpi_scale_x * xscale;
-                input.y = touchPoint.pos().y() * g_dpi_scale_y * yscale;
-                input.flags = (touchPoint.state() == Qt::TouchPointPressed) ? TOUCH_DOWN : TOUCH_UP;
-                input.id = touchPoint.id();
-                NativeTouch(input);
-                break;
-            case Qt::TouchPointMoved:
-                input.x = touchPoint.pos().x() * g_dpi_scale_x * xscale;
-                input.y = touchPoint.pos().y() * g_dpi_scale_y * yscale;
-                input.flags = TOUCH_MOVE;
-                input.id = touchPoint.id();
-                NativeTouch(input);
-                break;
-            default:
-                break;
-            }
-        }
-        break;
-    case QEvent::MouseButtonDblClick:
-        if (!g_Config.bShowTouchControls || GetUIState() != UISTATE_INGAME)
-            emit doubleClick();
-        break;
-    case QEvent::MouseButtonPress:
-    case QEvent::MouseButtonRelease:
-        input.x = ((QMouseEvent*)e)->pos().x() * g_dpi_scale_x * xscale;
-        input.y = ((QMouseEvent*)e)->pos().y() * g_dpi_scale_y * yscale;
-        input.flags = (e->type() == QEvent::MouseButtonPress) ? TOUCH_DOWN : TOUCH_UP;
-        input.id = 0;
-        NativeTouch(input);
-        break;
-    case QEvent::MouseMove:
-        input.x = ((QMouseEvent*)e)->pos().x() * g_dpi_scale_x * xscale;
-        input.y = ((QMouseEvent*)e)->pos().y() * g_dpi_scale_y * yscale;
-        input.flags = TOUCH_MOVE;
-        input.id = 0;
-        NativeTouch(input);
-        break;
-    case QEvent::Wheel:
-        NativeKey(KeyInput(DEVICE_ID_MOUSE, ((QWheelEvent*)e)->delta()<0 ? NKCODE_EXT_MOUSEWHEEL_DOWN : NKCODE_EXT_MOUSEWHEEL_UP, KEY_DOWN));
-        break;
-    case QEvent::KeyPress:
-        NativeKey(KeyInput(DEVICE_ID_KEYBOARD, KeyMapRawQttoNative.find(((QKeyEvent*)e)->key())->second, KEY_DOWN));
-        break;
-    case QEvent::KeyRelease:
-        NativeKey(KeyInput(DEVICE_ID_KEYBOARD, KeyMapRawQttoNative.find(((QKeyEvent*)e)->key())->second, KEY_UP));
-        break;
-    default:
-        return QWidget::event(e);
-    }
-    e->accept();
-    return true;
+bool MainUI::event(QEvent *e) {
+	TouchInput input;
+	QList<QTouchEvent::TouchPoint> touchPoints;
+
+	switch (e->type()) {
+	case QEvent::TouchBegin:
+	case QEvent::TouchUpdate:
+	case QEvent::TouchEnd:
+		touchPoints = static_cast<QTouchEvent *>(e)->touchPoints();
+		foreach (const QTouchEvent::TouchPoint &touchPoint, touchPoints) {
+			switch (touchPoint.state()) {
+			case Qt::TouchPointStationary:
+				break;
+			case Qt::TouchPointPressed:
+			case Qt::TouchPointReleased:
+				input.x = touchPoint.pos().x() * g_dpi_scale_x * xscale;
+				input.y = touchPoint.pos().y() * g_dpi_scale_y * yscale;
+				input.flags = (touchPoint.state() == Qt::TouchPointPressed) ? TOUCH_DOWN : TOUCH_UP;
+				input.id = touchPoint.id();
+				NativeTouch(input);
+				break;
+			case Qt::TouchPointMoved:
+				input.x = touchPoint.pos().x() * g_dpi_scale_x * xscale;
+				input.y = touchPoint.pos().y() * g_dpi_scale_y * yscale;
+				input.flags = TOUCH_MOVE;
+				input.id = touchPoint.id();
+				NativeTouch(input);
+				break;
+			default:
+				break;
+			}
+		}
+		break;
+	case QEvent::MouseButtonDblClick:
+		if (!g_Config.bShowTouchControls || GetUIState() != UISTATE_INGAME)
+			emit doubleClick();
+		break;
+	case QEvent::MouseButtonPress:
+	case QEvent::MouseButtonRelease:
+		input.x = ((QMouseEvent*)e)->pos().x() * g_dpi_scale_x * xscale;
+		input.y = ((QMouseEvent*)e)->pos().y() * g_dpi_scale_y * yscale;
+		input.flags = (e->type() == QEvent::MouseButtonPress) ? TOUCH_DOWN : TOUCH_UP;
+		input.id = 0;
+		NativeTouch(input);
+		break;
+	case QEvent::MouseMove:
+		input.x = ((QMouseEvent*)e)->pos().x() * g_dpi_scale_x * xscale;
+		input.y = ((QMouseEvent*)e)->pos().y() * g_dpi_scale_y * yscale;
+		input.flags = TOUCH_MOVE;
+		input.id = 0;
+		NativeTouch(input);
+		break;
+	case QEvent::Wheel:
+		NativeKey(KeyInput(DEVICE_ID_MOUSE, ((QWheelEvent*)e)->delta()<0 ? NKCODE_EXT_MOUSEWHEEL_DOWN : NKCODE_EXT_MOUSEWHEEL_UP, KEY_DOWN));
+		break;
+	case QEvent::KeyPress:
+		{
+			auto qtKeycode = ((QKeyEvent*)e)->key();
+			auto iter = KeyMapRawQttoNative.find(qtKeycode);
+			int nativeKeycode = 0;
+			if (iter != KeyMapRawQttoNative.end()) {
+				nativeKeycode = iter->second;
+				NativeKey(KeyInput(DEVICE_ID_KEYBOARD, nativeKeycode, KEY_DOWN));
+			}
+
+			// Also get the unicode value.
+			QString text = ((QKeyEvent*)e)->text();
+			std::string str = text.toStdString();
+			// Now, we don't want CHAR events for non-printable characters. Not quite sure how we'll best
+			// do that, but here's one attempt....
+			switch (nativeKeycode) {
+			case NKCODE_DEL:
+			case NKCODE_FORWARD_DEL:
+			case NKCODE_TAB:
+				break;
+			default:
+				if (str.size()) {
+					int pos = 0;
+					int code = u8_nextchar(str.c_str(), &pos);
+					NativeKey(KeyInput(DEVICE_ID_KEYBOARD, code, KEY_CHAR));
+				}
+				break;
+			}
+		}
+		break;
+	case QEvent::KeyRelease:
+		NativeKey(KeyInput(DEVICE_ID_KEYBOARD, KeyMapRawQttoNative.find(((QKeyEvent*)e)->key())->second, KEY_UP));
+		break;
+
+	default:
+		if (e->type() == browseFileEvent) {
+			QString fileName = QFileDialog::getOpenFileName(nullptr, "Load ROM", g_Config.currentDirectory.c_str(), "PSP ROMs (*.iso *.cso *.pbp *.elf *.zip *.ppdmp)");
+			if (QFile::exists(fileName)) {
+				QDir newPath;
+				g_Config.currentDirectory = newPath.filePath(fileName).toStdString();
+				g_Config.Save("browseFileEvent");
+
+				NativeMessageReceived("boot", fileName.toStdString().c_str());
+			}
+			break;
+		} else if (e->type() == browseFolderEvent) {
+			auto mm = GetI18NCategory("MainMenu");
+			QString fileName = QFileDialog::getExistingDirectory(nullptr, mm->T("Choose folder"), g_Config.currentDirectory.c_str());
+			if (QDir(fileName).exists()) {
+				NativeMessageReceived("browse_folderSelect", fileName.toStdString().c_str());
+			}
+		} else {
+			return QWidget::event(e);
+		}
+	}
+	e->accept();
+	return true;
 }
 
 void MainUI::initializeGL() {
@@ -371,6 +499,8 @@ void MainUI::initializeGL() {
 		ILOG("Only GL supported under Qt - switching.");
 		g_Config.iGPUBackend = (int)GPUBackend::OPENGL;
 	}
+
+	SetGLCoreContext(format().profile() == QGLFormat::CoreProfile);
 
 #ifndef USING_GLES2
 	// Some core profile drivers elide certain extensions from GL_EXTENSIONS/etc.
@@ -397,9 +527,9 @@ void MainUI::initializeGL() {
 }
 
 void MainUI::paintGL() {
-	#ifdef SDL
+#ifdef SDL
 	SDL_PumpEvents();
-	#endif
+#endif
 	updateAccelerometer();
 	if (emuThreadState == (int)EmuThreadState::DISABLED) {
 		UpdateRunLoop();
@@ -409,28 +539,27 @@ void MainUI::paintGL() {
 	}
 }
 
-void MainUI::updateAccelerometer()
-{
+void MainUI::updateAccelerometer() {
 #if defined(MOBILE_DEVICE)
-        // TODO: Toggle it depending on whether it is enabled
-        QAccelerometerReading *reading = acc->reading();
-        if (reading) {
-            AxisInput axis;
-            axis.deviceId = DEVICE_ID_ACCELEROMETER;
-            axis.flags = 0;
+	// TODO: Toggle it depending on whether it is enabled
+	QAccelerometerReading *reading = acc->reading();
+	if (reading) {
+		AxisInput axis;
+		axis.deviceId = DEVICE_ID_ACCELEROMETER;
+		axis.flags = 0;
 
-            axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_X;
-            axis.value = reading->x();
-            NativeAxis(axis);
+		axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_X;
+		axis.value = reading->x();
+		NativeAxis(axis);
 
-            axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_Y;
-            axis.value = reading->y();
-            NativeAxis(axis);
+		axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_Y;
+		axis.value = reading->y();
+		NativeAxis(axis);
 
-            axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_Z;
-            axis.value = reading->z();
-            NativeAxis(axis);
-        }
+		axis.axisId = JOYSTICK_AXIS_ACCELEROMETER_Z;
+		axis.value = reading->z();
+		NativeAxis(axis);
+	}
 #endif
 }
 
@@ -442,53 +571,58 @@ void MainUI::updateAccelerometer()
 #define AUDIO_SAMPLESIZE 16
 #define AUDIO_BUFFERS 5
 
-MainAudio::~MainAudio()
-{
-    if (feed != NULL) {
-        killTimer(timer);
-        feed->close();
-    }
-    if (output) {
-        output->stop();
-        delete output;
-    }
-    if (mixbuf)
-        free(mixbuf);
+MainAudio::~MainAudio() {
+	if (feed != nullptr) {
+		killTimer(timer);
+		feed->close();
+	}
+	if (output) {
+		output->stop();
+		delete output;
+	}
+	if (mixbuf)
+		free(mixbuf);
 }
 
-void MainAudio::run()
-{
-    QAudioFormat fmt;
-    fmt.setSampleRate(AUDIO_FREQ);
-    fmt.setCodec("audio/pcm");
-    fmt.setChannelCount(AUDIO_CHANNELS);
-    fmt.setSampleSize(AUDIO_SAMPLESIZE);
-    fmt.setByteOrder(QAudioFormat::LittleEndian);
-    fmt.setSampleType(QAudioFormat::SignedInt);
-    mixlen = sizeof(short)*AUDIO_BUFFERS*AUDIO_CHANNELS*AUDIO_SAMPLES;
-    mixbuf = (char*)malloc(mixlen);
-    output = new QAudioOutput(fmt);
-    output->setBufferSize(mixlen);
-    feed = output->start();
-    if (feed != NULL) {
-        // buffering has already done in the internal mixed buffer
-        // use a small interval to copy mixed audio stream from
-        // internal buffer to audio output buffer as soon as possible
-        // use 1 instead of 0 to prevent CPU exhausting
-        timer = startTimer(1);
-    }
+void MainAudio::run() {
+	QAudioFormat fmt;
+	fmt.setSampleRate(AUDIO_FREQ);
+	fmt.setCodec("audio/pcm");
+	fmt.setChannelCount(AUDIO_CHANNELS);
+	fmt.setSampleSize(AUDIO_SAMPLESIZE);
+	fmt.setByteOrder(QAudioFormat::LittleEndian);
+	fmt.setSampleType(QAudioFormat::SignedInt);
+	mixlen = sizeof(short)*AUDIO_BUFFERS*AUDIO_CHANNELS*AUDIO_SAMPLES;
+	mixbuf = (char*)malloc(mixlen);
+	output = new QAudioOutput(fmt);
+	output->setBufferSize(mixlen);
+	feed = output->start();
+	if (feed != nullptr) {
+		// buffering has already done in the internal mixed buffer
+		// use a small interval to copy mixed audio stream from
+		// internal buffer to audio output buffer as soon as possible
+		// use 1 instead of 0 to prevent CPU exhausting
+		timer = startTimer(1);
+	}
 }
 
-void MainAudio::timerEvent(QTimerEvent *)
-{
-    memset(mixbuf, 0, mixlen);
-    size_t frames = NativeMix((short *)mixbuf, AUDIO_BUFFERS*AUDIO_SAMPLES);
-    if (frames > 0)
-        feed->write(mixbuf, sizeof(short) * AUDIO_CHANNELS * frames);
+void MainAudio::timerEvent(QTimerEvent *) {
+	memset(mixbuf, 0, mixlen);
+	size_t frames = NativeMix((short *)mixbuf, AUDIO_BUFFERS*AUDIO_SAMPLES);
+	if (frames > 0)
+		feed->write(mixbuf, sizeof(short) * AUDIO_CHANNELS * frames);
 }
 
 #endif
 
+
+void QTCamera::startCamera(int width, int height) {
+	__qt_startCapture(width, height);
+}
+
+void QTCamera::stopCamera() {
+	__qt_stopCapture();
+}
 
 #ifndef SDL
 Q_DECL_EXPORT
@@ -506,20 +640,35 @@ int main(int argc, char *argv[])
 #if defined(Q_OS_LINUX)
 	QApplication::setAttribute(Qt::AA_X11InitThreads, true);
 #endif
+
+	// Qt would otherwise default to a 3.0 compatibility profile
+	// except on Nvidia, where Nvidia gives us the highest supported anyway
+	QGLFormat format;
+	format.setVersion(4, 6);
+	format.setProfile(QGLFormat::CoreProfile);
+	QGLFormat::setDefaultFormat(format);
+
 	QApplication a(argc, argv);
-	QSize res = QApplication::desktop()->screenGeometry().size();
+	QScreen* screen = a.primaryScreen();
+	QSizeF res = screen->physicalSize();
+
 	if (res.width() < res.height())
 		res.transpose();
 	pixel_xres = res.width();
 	pixel_yres = res.height();
-	g_dpi_scale_x = CalculateDPIScale();
-	g_dpi_scale_y = CalculateDPIScale();
+
+	g_dpi_scale_x = screen->logicalDotsPerInchX() / screen->physicalDotsPerInchX();
+	g_dpi_scale_y = screen->logicalDotsPerInchY() / screen->physicalDotsPerInchY();
 	g_dpi_scale_real_x = g_dpi_scale_x;
 	g_dpi_scale_real_y = g_dpi_scale_y;
 	dp_xres = (int)(pixel_xres * g_dpi_scale_x);
 	dp_yres = (int)(pixel_yres * g_dpi_scale_y);
 
-	refreshRate = (int)(a.primaryScreen()->refreshRate() * 1000);
+	refreshRate = screen->refreshRate();
+
+	qtcamera = new QTCamera;
+	QObject::connect(qtcamera, SIGNAL(onStartCamera(int, int)), qtcamera, SLOT(startCamera(int, int)));
+	QObject::connect(qtcamera, SIGNAL(onStopCamera()),  qtcamera, SLOT(stopCamera()));
 
 	std::string savegame_dir = ".";
 	std::string external_dir = ".";
@@ -539,11 +688,12 @@ int main(int argc, char *argv[])
 	ILOG("Left mainInternal here.");
 
 #ifdef SDL
-	SDL_PauseAudio(1);
-	SDL_CloseAudio();
+	if (audioDev > 0) {
+		SDL_PauseAudioDevice(audioDev, 1);
+		SDL_CloseAudioDevice(audioDev);
+	}
 #endif
 	NativeShutdown();
 	glslang::FinalizeProcess();
 	return ret;
 }
-

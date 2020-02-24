@@ -26,6 +26,7 @@
 #include "Core/MIPS/MIPS.h"
 #include "Core/Reporting.h"
 #include "Core/Config.h"
+#include "Core/System.h"
 
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelMemory.h"
@@ -129,7 +130,7 @@ enum UtilityDialogType {
 
 // Only a single dialog is allowed at a time.
 static UtilityDialogType currentDialogType;
-static bool currentDialogActive;
+bool currentDialogActive;
 static PSPSaveDialog saveDialog;
 static PSPMsgDialog msgDialog;
 static PSPOskDialog oskDialog;
@@ -185,8 +186,14 @@ static int sceUtilitySavedataInitStart(u32 paramAddr)
 {
 	if (currentDialogActive && currentDialogType != UTILITY_DIALOG_SAVEDATA)
 	{
-		WARN_LOG(SCEUTILITY, "sceUtilitySavedataInitStart(%08x): wrong dialog type", paramAddr);
-		return SCE_ERROR_UTILITY_WRONG_TYPE;
+		if (PSP_CoreParameter().compat.flags().YugiohSaveFix)
+		{
+			WARN_LOG(SCEUTILITY, "Yugioh Savedata Correction");
+		}
+		else {
+			WARN_LOG(SCEUTILITY, "sceUtilitySavedataInitStart(%08x): wrong dialog type", paramAddr);
+			return SCE_ERROR_UTILITY_WRONG_TYPE;
+		}
 	}
 
 	oldStatus = 100;

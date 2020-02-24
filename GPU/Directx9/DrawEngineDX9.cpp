@@ -43,17 +43,16 @@
 
 namespace DX9 {
 
-const D3DPRIMITIVETYPE glprim[8] = {
+static const D3DPRIMITIVETYPE d3d_prim[8] = {
 	D3DPT_POINTLIST,
 	D3DPT_LINELIST,
 	D3DPT_LINESTRIP,
 	D3DPT_TRIANGLELIST,
 	D3DPT_TRIANGLESTRIP,
 	D3DPT_TRIANGLEFAN,
-	D3DPT_TRIANGLELIST,	 // With OpenGL ES we have to expand sprites into triangles, tripling the data instead of doubling. sigh. OpenGL ES, Y U NO SUPPORT GL_QUADS?
+	D3DPT_TRIANGLELIST,
 };
 
-// hrydgard's quick guesses - TODO verify
 static const int D3DPRIMITIVEVERTEXCOUNT[8][2] = {
 	{0, 0}, // invalid
 	{1, 0}, // 1 = D3DPT_POINTLIST,
@@ -95,13 +94,13 @@ DrawEngineDX9::DrawEngineDX9(Draw::DrawContext *draw) : vai_(256), vertexDeclMap
 	// All this is a LOT of memory, need to see if we can cut down somehow.
 	decoded = (u8 *)AllocateMemoryPages(DECODED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	decIndex = (u16 *)AllocateMemoryPages(DECODED_INDEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
-	splineBuffer = (u8 *)AllocateMemoryPages(SPLINE_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 
 	indexGen.Setup(decIndex);
 
 	InitDeviceObjects();
 
-	tessDataTransfer = new TessellationDataTransferDX9();
+	tessDataTransferDX9 = new TessellationDataTransferDX9();
+	tessDataTransfer = tessDataTransferDX9;
 
 	device_->CreateVertexDeclaration(TransformedVertexElements, &transformedVertexDecl_);
 }
@@ -114,14 +113,13 @@ DrawEngineDX9::~DrawEngineDX9() {
 	DestroyDeviceObjects();
 	FreeMemoryPages(decoded, DECODED_VERTEX_BUFFER_SIZE);
 	FreeMemoryPages(decIndex, DECODED_INDEX_BUFFER_SIZE);
-	FreeMemoryPages(splineBuffer, SPLINE_BUFFER_SIZE);
 	vertexDeclMap_.Iterate([&](const uint32_t &key, IDirect3DVertexDeclaration9 *decl) {
 		if (decl) {
 			decl->Release();
 		}
 	});
 	vertexDeclMap_.Clear();
-	delete tessDataTransfer;
+	delete tessDataTransferDX9;
 }
 
 void DrawEngineDX9::InitDeviceObjects() {
@@ -500,9 +498,9 @@ rotateVBO:
 			device_->SetVertexDeclaration(pHardwareVertexDecl);
 			if (vb_ == NULL) {
 				if (useElements) {
-					device_->DrawIndexedPrimitiveUP(glprim[prim], 0, maxIndex + 1, D3DPrimCount(glprim[prim], vertexCount), decIndex, D3DFMT_INDEX16, decoded, dec_->GetDecVtxFmt().stride);
+					device_->DrawIndexedPrimitiveUP(d3d_prim[prim], 0, maxIndex + 1, D3DPrimCount(d3d_prim[prim], vertexCount), decIndex, D3DFMT_INDEX16, decoded, dec_->GetDecVtxFmt().stride);
 				} else {
-					device_->DrawPrimitiveUP(glprim[prim], D3DPrimCount(glprim[prim], vertexCount), decoded, dec_->GetDecVtxFmt().stride);
+					device_->DrawPrimitiveUP(d3d_prim[prim], D3DPrimCount(d3d_prim[prim], vertexCount), decoded, dec_->GetDecVtxFmt().stride);
 				}
 			} else {
 				device_->SetStreamSource(0, vb_, 0, dec_->GetDecVtxFmt().stride);
@@ -510,9 +508,9 @@ rotateVBO:
 				if (useElements) {
 					device_->SetIndices(ib_);
 
-					device_->DrawIndexedPrimitive(glprim[prim], 0, 0, maxIndex + 1, 0, D3DPrimCount(glprim[prim], vertexCount));
+					device_->DrawIndexedPrimitive(d3d_prim[prim], 0, 0, maxIndex + 1, 0, D3DPrimCount(d3d_prim[prim], vertexCount));
 				} else {
-					device_->DrawPrimitive(glprim[prim], 0, D3DPrimCount(glprim[prim], vertexCount));
+					device_->DrawPrimitive(d3d_prim[prim], 0, D3DPrimCount(d3d_prim[prim], vertexCount));
 				}
 			}
 		}
@@ -569,9 +567,9 @@ rotateVBO:
 
 			device_->SetVertexDeclaration(transformedVertexDecl_);
 			if (drawIndexed) {
-				device_->DrawIndexedPrimitiveUP(glprim[prim], 0, maxIndex, D3DPrimCount(glprim[prim], numTrans), inds, D3DFMT_INDEX16, drawBuffer, sizeof(TransformedVertex));
+				device_->DrawIndexedPrimitiveUP(d3d_prim[prim], 0, maxIndex, D3DPrimCount(d3d_prim[prim], numTrans), inds, D3DFMT_INDEX16, drawBuffer, sizeof(TransformedVertex));
 			} else {
-				device_->DrawPrimitiveUP(glprim[prim], D3DPrimCount(glprim[prim], numTrans), drawBuffer, sizeof(TransformedVertex));
+				device_->DrawPrimitiveUP(d3d_prim[prim], D3DPrimCount(d3d_prim[prim], numTrans), drawBuffer, sizeof(TransformedVertex));
 			}
 		} else if (result.action == SW_CLEAR) {
 			u32 clearColor = result.color;
@@ -594,7 +592,7 @@ rotateVBO:
 			int scissorX2 = gstate.getScissorX2() + 1;
 			int scissorY2 = gstate.getScissorY2() + 1;
 			framebufferManager_->SetSafeSize(scissorX2, scissorY2);
-			if (g_Config.bBlockTransferGPU && (gstate_c.featureFlags & GPU_USE_CLEAR_RAM_HACK) && gstate.isClearModeColorMask() && (gstate.isClearModeAlphaMask() || gstate.FrameBufFormat() == GE_FORMAT_565)) {
+			if ((gstate_c.featureFlags & GPU_USE_CLEAR_RAM_HACK) && gstate.isClearModeColorMask() && (gstate.isClearModeAlphaMask() || gstate.FrameBufFormat() == GE_FORMAT_565)) {
 				int scissorX1 = gstate.getScissorX1();
 				int scissorY1 = gstate.getScissorY1();
 				framebufferManager_->ApplyClearToMemory(scissorX1, scissorY1, scissorX2, scissorY2, clearColor);
@@ -624,8 +622,8 @@ rotateVBO:
 	GPUDebug::NotifyDraw();
 }
 
-void DrawEngineDX9::TessellationDataTransferDX9::SendDataToShader(const float * pos, const float * tex, const float * col, int size, bool hasColor, bool hasTexCoords)
-{
+void TessellationDataTransferDX9::SendDataToShader(const SimpleVertex *const *points, int size_u, int size_v, u32 vertType, const Spline::Weight2D &weights) {
+	// TODO
 }
 
 }  // namespace

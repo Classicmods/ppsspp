@@ -1,4 +1,3 @@
-
 // Copyright (c) 2012- PPSSPP Project.
 
 // This program is free software: you can redistribute it and/or modify
@@ -199,6 +198,11 @@ void __CtrlSetAnalogY(float y, int stick)
 void __CtrlSetRapidFire(bool state)
 {
 	emuRapidFire = state;
+}
+
+bool __CtrlGetRapidFire()
+{
+	return emuRapidFire;
 }
 
 static int __CtrlReadSingleBuffer(PSPPointer<CtrlData> data, bool negative)
@@ -509,7 +513,7 @@ static void __CtrlWriteUserLatch(CtrlLatch *userLatch, int bufs) {
 	userLatch->btnMake &= CTRL_MASK_USER;
 	userLatch->btnPress &= CTRL_MASK_USER;
 	if (bufs > 0) {
-		userLatch->btnRelease |= CTRL_MASK_USER;
+		userLatch->btnRelease |= ~CTRL_MASK_USER;
 	}
 }
 

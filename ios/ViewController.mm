@@ -5,7 +5,9 @@
 // Modified by xSacha
 //
 
+#import "AppDelegate.h"
 #import "ViewController.h"
+#import "DisplayManager.h"
 #import "SubtleVolume.h"
 #import <GLKit/GLKit.h>
 #include <cassert>
@@ -25,6 +27,8 @@
 #include "Core/Config.h"
 #include "Core/ConfigValues.h"
 #include "Core/System.h"
+#include "Core/HLE/sceUsbCam.h"
+#include "Core/HLE/sceUsbGps.h"
 #include "Common/GraphicsContext.h"
 
 #include <sys/types.h>
@@ -42,7 +46,7 @@ public:
 		renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 		SetGPUBackend(GPUBackend::OPENGL);
 		bool success = draw_->CreatePresets();
-		assert(success);
+		_assert_msg_(G3D, success, "Failed to compile preset shaders");
 	}
 	~IOSGraphicsContext() {
 		delete draw_;
@@ -51,7 +55,7 @@ public:
 		return draw_;
 	}
 	void ThreadStart() override {
-		renderManager_->ThreadStart();
+		renderManager_->ThreadStart(draw_);
 	}
 
 	bool ThreadFrame() override {
@@ -82,6 +86,8 @@ static bool threadStopped = false;
 
 __unsafe_unretained ViewController* sharedViewController;
 static GraphicsContext *graphicsContext;
+static CameraHelper *cameraHelper;
+static LocationHelper *locationHelper;
 
 @interface ViewController () {
 	std::map<uint16_t, uint16_t> iCadeToKeyMap;
@@ -143,8 +149,10 @@ static GraphicsContext *graphicsContext;
 
 - (void)viewDidLoad {
 	[super viewDidLoad];
+	[[DisplayManager shared] setupDisplayListener];
 
-	self.view.frame = [[UIScreen mainScreen] bounds];
+    UIScreen* screen = [(AppDelegate*)[UIApplication sharedApplication].delegate screen];
+	self.view.frame = [screen bounds];
 	self.view.multipleTouchEnabled = YES;
 	self.context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3];
 	
@@ -158,36 +166,7 @@ static GraphicsContext *graphicsContext;
 	[EAGLContext setCurrentContext:self.context];
 	self.preferredFramesPerSecond = 60;
 
-	// Might be useful for a speed boot, sacrificing resolution:
-	// view.contentScaleFactor = 1.0;
-
-	float scale = [UIScreen mainScreen].scale;
-	
-	if ([[UIScreen mainScreen] respondsToSelector:@selector(nativeScale)]) {
-		scale = [UIScreen mainScreen].nativeScale;
-	}
-
-	CGSize size = [[UIApplication sharedApplication].delegate window].frame.size;
-
-	if (size.height > size.width) {
-		float h = size.height;
-		size.height = size.width;
-		size.width = h;
-	}
-
-	g_dpi = (IS_IPAD() ? 200.0f : 150.0f) * scale;
-	g_dpi_scale_x = 240.0f / g_dpi;
-	g_dpi_scale_y = 240.0f / g_dpi;
-	g_dpi_scale_real_x = g_dpi_scale_x;
-	g_dpi_scale_real_y = g_dpi_scale_y;
-	pixel_xres = size.width * scale;
-	pixel_yres = size.height * scale;
-
-	dp_xres = pixel_xres * g_dpi_scale_x;
-	dp_yres = pixel_yres * g_dpi_scale_y;
-
-	pixel_in_dps_x = (float)pixel_xres / (float)dp_xres;
-	pixel_in_dps_y = (float)pixel_yres / (float)dp_yres;
+	[[DisplayManager shared] updateResolution:[UIScreen mainScreen]];
 
 	graphicsContext = new IOSGraphicsContext();
 	
@@ -227,6 +206,12 @@ static GraphicsContext *graphicsContext;
 	volume.delegate = self;
 	[self.view addSubview:volume];
 	[self.view bringSubviewToFront:volume];
+
+	cameraHelper = [[CameraHelper alloc] init];
+	[cameraHelper setDelegate:self];
+
+	locationHelper = [[LocationHelper alloc] init];
+	[locationHelper setDelegate:self];
 	
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
 		NativeInitGraphics(graphicsContext);
@@ -238,7 +223,6 @@ static GraphicsContext *graphicsContext;
 			time_update();
 		}
 
-		threadStopped = true;
 
 		ILOG("Emulation thread shutting down\n");
 		NativeShutdownGraphics();
@@ -246,6 +230,8 @@ static GraphicsContext *graphicsContext;
 		// Also ask the main thread to stop, so it doesn't hang waiting for a new frame.
 		ILOG("Emulation thread stopping\n");
 		graphicsContext->StopThread();
+		
+		threadStopped = true;
 	});
 }
 
@@ -574,6 +560,12 @@ static GraphicsContext *graphicsContext;
 	NativeKey(key);
 }
 
+// Enables tapping for edge area.
+-(UIRectEdge)preferredScreenEdgesDeferringSystemGestures
+{
+	return UIRectEdgeAll;
+}
+
 - (void)setupController:(GCController *)controller
 {
 	self.gameController = controller;
@@ -685,7 +677,44 @@ static GraphicsContext *graphicsContext;
 }
 #endif
 
+void setCameraSize(int width, int height) {
+	[cameraHelper setCameraSize: width h:height];
+}
+
+void startVideo() {
+	[cameraHelper startVideo];
+}
+
+void stopVideo() {
+    [cameraHelper stopVideo];
+}
+
+-(void) PushCameraImageIOS:(long long)len buffer:(unsigned char*)data {
+    Camera::pushCameraImage(len, data);
+}
+
+void startLocation() {
+    [locationHelper startLocationUpdates];
+}
+
+void stopLocation() {
+    [locationHelper stopLocationUpdates];
+}
+
+-(void) SetGpsDataIOS:(CLLocation *)newLocation {
+    GPS::setGpsData((long long)newLocation.timestamp.timeIntervalSince1970,
+					newLocation.horizontalAccuracy/5.0,
+					newLocation.coordinate.latitude, newLocation.coordinate.longitude,
+					newLocation.altitude,
+					MAX(newLocation.speed * 3.6, 0.0), /* m/s to km/h */
+					0 /* bearing */);
+}
+
 @end
+
+void OpenDirectory(const char *path) {
+	// Unsupported
+}
 
 void LaunchBrowser(char const* url)
 {

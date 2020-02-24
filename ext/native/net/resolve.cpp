@@ -43,42 +43,17 @@ void Shutdown()
 #endif
 }
 
-char *DNSResolveTry(const char *host, const char **err)
-{
-	struct hostent *hent;
-	if((hent = gethostbyname(host)) == NULL)
-	{
-		*err = "Can't get IP";
-		return NULL;
+bool DNSResolve(const std::string &host, const std::string &service, addrinfo **res, std::string &error, DNSType type) {
+#if PPSSPP_PLATFORM(SWITCH)
+	// Force IPv4 lookups.
+	if (type == DNSType::IPV6) {
+		*res = nullptr;
+		return false;
+	} else if (type == DNSType::ANY) {
+		type = DNSType::IPV4;
 	}
-	int iplen = 15; //XXX.XXX.XXX.XXX
-	char *ip = (char *)malloc(iplen+1);
-	memset(ip, 0, iplen+1);
-	char *iptoa = inet_ntoa(*(in_addr *)hent->h_addr_list[0]);
-	if (iptoa == NULL)
-	{
-		*err = "Can't resolve host";
-		free(ip);
-		return NULL;
-	}
-	strncpy(ip, iptoa, iplen);
-	return ip;
-}
+#endif
 
-char *DNSResolve(const char *host)
-{
-	const char *err;
-	char *ip = DNSResolveTry(host, &err);
-	if (ip == NULL)
-	{
-		perror(err);
-		exit(1);
-	}
-	return ip;
-}
-
-bool DNSResolve(const std::string &host, const std::string &service, addrinfo **res, std::string &error, DNSType type)
-{
 	addrinfo hints = {0};
 	// TODO: Might be uses to lookup other values.
 	hints.ai_socktype = SOCK_STREAM;
@@ -95,9 +70,9 @@ bool DNSResolve(const std::string &host, const std::string &service, addrinfo **
 	else if (type == DNSType::IPV6)
 		hints.ai_family = AF_INET6;
 
-	const char *servicep = service.length() == 0 ? NULL : service.c_str();
+	const char *servicep = service.length() == 0 ? nullptr : service.c_str();
 
-	*res = NULL;
+	*res = nullptr;
 	int result = getaddrinfo(host.c_str(), servicep, &hints, res);
 	if (result == EAI_AGAIN) {
 		// Temporary failure.  Since this already blocks, let's just try once more.
@@ -111,9 +86,9 @@ bool DNSResolve(const std::string &host, const std::string &service, addrinfo **
 #else
 		error = gai_strerror(result);
 #endif
-		if (*res != NULL)
+		if (*res != nullptr)
 			freeaddrinfo(*res);
-		*res = NULL;
+		*res = nullptr;
 		return false;
 	}
 

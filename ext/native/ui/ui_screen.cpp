@@ -78,9 +78,9 @@ void UIScreen::preRender() {
 		return;
 	}
 	draw->BeginFrame();
-	screenManager()->getUIContext()->BeginFrame();
 	// Bind and clear the back buffer
 	draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, 0xFF000000 });
+	screenManager()->getUIContext()->BeginFrame();
 
 	Draw::Viewport viewport;
 	viewport.TopLeftX = 0;
@@ -113,7 +113,6 @@ void UIScreen::render() {
 		uiContext->Begin();
 		DrawBackground(*uiContext);
 		root_->Draw(*uiContext);
-		uiContext->End();
 		uiContext->Flush();
 
 		uiContext->PopTransform();
@@ -234,7 +233,7 @@ UI::EventReturn UIScreen::OnCancel(UI::EventParams &e) {
 
 PopupScreen::PopupScreen(std::string title, std::string button1, std::string button2)
 	: box_(0), defaultButton_(nullptr), title_(title) {
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory("Dialog");
 	if (!button1.empty())
 		button1_ = di->T(button1.c_str());
 	if (!button2.empty())
@@ -268,6 +267,9 @@ bool PopupScreen::key(const KeyInput &key) {
 
 void PopupScreen::update() {
 	UIDialogScreen::update();
+
+	if (defaultButton_)
+		defaultButton_->SetEnabled(CanComplete(DR_OK));
 
 	float animatePos = 1.0f;
 
@@ -315,10 +317,12 @@ void PopupScreen::SetPopupOrigin(const UI::View *view) {
 }
 
 void PopupScreen::TriggerFinish(DialogResult result) {
-	finishFrame_ = frames_;
-	finishResult_ = result;
+	if (CanComplete(result)) {
+		finishFrame_ = frames_;
+		finishResult_ = result;
 
-	OnCompleted(result);
+		OnCompleted(result);
+	}
 }
 
 void PopupScreen::resized() {
@@ -423,7 +427,7 @@ std::string ChopTitle(const std::string &title) {
 UI::EventReturn PopupMultiChoice::HandleClick(UI::EventParams &e) {
 	restoreFocus_ = HasFocus();
 
-	I18NCategory *category = category_ ? GetI18NCategory(category_) : nullptr;
+	auto category = category_ ? GetI18NCategory(category_) : nullptr;
 
 	std::vector<std::string> choices;
 	for (int i = 0; i < numChoices_; i++) {
@@ -446,7 +450,7 @@ void PopupMultiChoice::Update() {
 void PopupMultiChoice::UpdateText() {
 	if (!choices_)
 		return;
-	I18NCategory *category = GetI18NCategory(category_);
+	auto category = GetI18NCategory(category_);
 	// Clamp the value to be safe.
 	if (*value_ < minVal_ || *value_ > minVal_ + numChoices_ - 1) {
 		valueText_ = "(invalid choice)";  // Shouldn't happen. Should be no need to translate this.
@@ -861,7 +865,7 @@ void ChoiceWithValueDisplay::Draw(UIContext &dc) {
 	int paddingX = 12;
 	dc.SetFontStyle(dc.theme->uiFont);
 
-	I18NCategory *category = GetI18NCategory(category_);
+	auto category = GetI18NCategory(category_);
 	std::ostringstream valueText;
 	if (translateCallback_ && sValue_) {
 		valueText << translateCallback_(sValue_->c_str());

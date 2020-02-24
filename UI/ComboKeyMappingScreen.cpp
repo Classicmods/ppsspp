@@ -33,18 +33,18 @@
 
 void Combo_keyScreen::CreateViews() {
 	using namespace UI;
-	I18NCategory *co = GetI18NCategory("Controls");
+	auto co = GetI18NCategory("Controls");
 	root_ = new LinearLayout(ORIENT_VERTICAL);
 	root_->Add(new ItemHeader(co->T("Combo Key Setting")));
 	LinearLayout *root__ = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(1.0));
 	root_->Add(root__);
 	LinearLayout *leftColumn = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(120, FILL_PARENT));
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory("Dialog");
 
 	static const int comboKeyImages[5] = {
 		I_1, I_2, I_3, I_4, I_5,
 	};
-	
+
 	comboselect = new ChoiceStrip(ORIENT_VERTICAL, new AnchorLayoutParams(10, 10,  NONE, NONE));
 	comboselect->SetSpacing(10);
 	for (int i = 0; i < 5; i++) {
@@ -113,7 +113,7 @@ void Combo_keyScreen::CreateViews() {
 
 	std::map<std::string, int>::iterator imageFinder;
 
-	I18NCategory *mc = GetI18NCategory("MappableControls");
+	auto mc = GetI18NCategory("MappableControls");
 
 	for (auto i = keyToggles.begin(); i != keyToggles.end(); ++i) {
 		LinearLayout *row = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
@@ -169,7 +169,7 @@ void Combo_keyScreen::onFinish(DialogResult result) {
 		g_Config.iCombokey4 = arrayToInt(array);
 		break;
 	}
-	g_Config.Save();
+	g_Config.Save("Combo_keyScreen::onFInish");
 }
 
 UI::EventReturn Combo_keyScreen::ChoiceEventHandler::onChoiceClick(UI::EventParams &e){

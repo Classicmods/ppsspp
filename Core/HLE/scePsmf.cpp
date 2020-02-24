@@ -220,7 +220,7 @@ public:
 
 	void ScheduleFinish(u32 handle) {
 		if (!finishThread) {
-			finishThread = new HLEHelperThread("scePsmfPlayer", "scePsmfPlayer", "__PsmfPlayerFinish", playbackThreadPriority, 0x100);
+			finishThread = new HLEHelperThread("scePsmfPlayer", "scePsmfPlayer", "__PsmfPlayerFinish", playbackThreadPriority, 0x200);
 			finishThread->Start(handle, 0);
 		}
 	}
@@ -543,15 +543,23 @@ void PsmfPlayer::DoState(PointerWrap &p) {
 	}
 	p.Do(psmfPlayerAvcAu);
 	if (s >= 7) {
-		bool hasFinishThread = finishThread != NULL;
+		bool hasFinishThread = finishThread != nullptr;
 		p.Do(hasFinishThread);
 		if (hasFinishThread) {
 			p.Do(finishThread);
+		} else {
+			if (finishThread)
+				finishThread->Forget();
+			delete finishThread;
+			finishThread = nullptr;
 		}
 	} else if (s >= 6) {
 		p.Do(finishThread);
 	} else {
-		finishThread = NULL;
+		if (finishThread)
+			finishThread->Forget();
+		delete finishThread;
+		finishThread = nullptr;
 	}
 
 	if (s >= 8) {
@@ -1155,7 +1163,7 @@ static int scePsmfPlayerBreak(u32 psmfPlayer)
 }
 
 static int _PsmfPlayerFillRingbuffer(PsmfPlayer *psmfplayer) {
-	if (!psmfplayer->filehandle)
+	if (psmfplayer->filehandle <= 0)
 		return -1;
 	u8* buf = psmfplayer->tempbuf;
 	int tempbufSize = (int)sizeof(psmfplayer->tempbuf);
@@ -1199,7 +1207,7 @@ static int _PsmfPlayerSetPsmfOffset(u32 psmfPlayer, const char *filename, int of
 	int delayUs = 1100;
 
 	psmfplayer->filehandle = pspFileSystem.OpenFile(filename, (FileAccess) FILEACCESS_READ);
-	if (!psmfplayer->filehandle) {
+	if (psmfplayer->filehandle < 0) {
 		return hleDelayResult(SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "psmfplayer set", delayUs);
 	}
 

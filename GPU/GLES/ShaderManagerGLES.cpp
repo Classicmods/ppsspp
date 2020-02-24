@@ -28,11 +28,12 @@
 #include "base/timeutil.h"
 #include "gfx/gl_debug_log.h"
 #include "gfx_es2/gpu_features.h"
-#include "thin3d/GLRenderManager.h"
 #include "i18n/i18n.h"
 #include "math/math_util.h"
 #include "math/lin/matrix4x4.h"
 #include "profiler/profiler.h"
+#include "thin3d/thin3d.h"
+#include "thin3d/GLRenderManager.h"
 
 #include "Common/FileUtil.h"
 #include "Core/Config.h"
@@ -46,6 +47,8 @@
 #include "GPU/GLES/ShaderManagerGLES.h"
 #include "GPU/GLES/DrawEngineGLES.h"
 #include "GPU/GLES/FramebufferManagerGLES.h"
+
+using namespace Lin;
 
 Shader::Shader(GLRenderManager *render, const char *code, const std::string &desc, uint32_t glShaderType, bool useHWTransform, uint32_t attrMask, uint64_t uniformMask)
 	  : render_(render), failed_(false), useHWTransform_(useHWTransform), attrMask_(attrMask), uniformMask_(uniformMask) {
@@ -159,13 +162,10 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 
 	// We need to fetch these unconditionally, gstate_c.spline or bezier will not be set if we
 	// create this shader at load time from the shader cache.
-	queries.push_back({ &u_tess_pos_tex, "u_tess_pos_tex" });
-	queries.push_back({ &u_tess_tex_tex, "u_tess_tex_tex" });
-	queries.push_back({ &u_tess_col_tex, "u_tess_col_tex" });
-	queries.push_back({ &u_spline_count_u, "u_spline_count_u" });
-	queries.push_back({ &u_spline_count_v, "u_spline_count_v" });
-	queries.push_back({ &u_spline_type_u, "u_spline_type_u" });
-	queries.push_back({ &u_spline_type_v, "u_spline_type_v" });
+	queries.push_back({ &u_tess_points, "u_tess_points" });
+	queries.push_back({ &u_tess_weights_u, "u_tess_weights_u" });
+	queries.push_back({ &u_tess_weights_v, "u_tess_weights_v" });
+	queries.push_back({ &u_spline_counts, "u_spline_counts" });
 	queries.push_back({ &u_depal, "u_depal" });
 
 	attrMask = vs->GetAttrMask();
@@ -176,9 +176,9 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	initialize.push_back({ &u_fbotex,       0, 1 });
 	initialize.push_back({ &u_testtex,      0, 2 });
 	initialize.push_back({ &u_pal,          0, 3 }); // CLUT
-	initialize.push_back({ &u_tess_pos_tex, 0, 4 }); // Texture unit 4
-	initialize.push_back({ &u_tess_tex_tex, 0, 5 }); // Texture unit 5
-	initialize.push_back({ &u_tess_col_tex, 0, 6 }); // Texture unit 6
+	initialize.push_back({ &u_tess_points,  0, 4 }); // Control Points
+	initialize.push_back({ &u_tess_weights_u, 0, 5 });
+	initialize.push_back({ &u_tess_weights_v, 0, 6 });
 
 	program = render->CreateProgram(shaders, semantics, queries, initialize, gstate_c.featureFlags & GPU_SUPPORTS_DUALSOURCE_BLEND);
 
@@ -567,18 +567,14 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid) {
 	}
 
 	if (dirty & DIRTY_BEZIERSPLINE) {
-		render_->SetUniformI1(&u_spline_count_u, gstate_c.spline_count_u);
-		if (u_spline_count_v != -1)
-			render_->SetUniformI1(&u_spline_count_v, gstate_c.spline_count_v);
-		if (u_spline_type_u != -1)
-			render_->SetUniformI1(&u_spline_type_u, gstate_c.spline_type_u);
-		if (u_spline_type_v != -1)
-			render_->SetUniformI1(&u_spline_type_v, gstate_c.spline_type_v);
+		if (u_spline_counts != -1) {
+			render_->SetUniformI1(&u_spline_counts, gstate_c.spline_num_points_u);
+		}
 	}
 }
 
 ShaderManagerGLES::ShaderManagerGLES(Draw::DrawContext *draw)
-		: lastShader_(nullptr), shaderSwitchDirtyUniforms_(0), diskCacheDirty_(false), fsCache_(16), vsCache_(16) {
+		: ShaderManagerCommon(draw), lastShader_(nullptr), shaderSwitchDirtyUniforms_(0), diskCacheDirty_(false), fsCache_(16), vsCache_(16) {
 	render_ = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	codeBuffer_ = new char[16384];
 	lastFSID_.set_invalid();
@@ -617,6 +613,7 @@ void ShaderManagerGLES::DeviceLost() {
 
 void ShaderManagerGLES::DeviceRestore(Draw::DrawContext *draw) {
 	render_ = (GLRenderManager *)draw->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+	draw_ = draw;
 }
 
 void ShaderManagerGLES::DirtyShader() {
@@ -681,7 +678,7 @@ Shader *ShaderManagerGLES::ApplyVertexShader(int prim, u32 vertType, VShaderID *
 		// Vertex shader not in cache. Let's compile it.
 		vs = CompileVertexShader(*VSID);
 		if (vs->Failed()) {
-			I18NCategory *gr = GetI18NCategory("Graphics");
+			auto gr = GetI18NCategory("Graphics");
 			ERROR_LOG(G3D, "Shader compilation failed, falling back to software transform");
 			if (!g_Config.bHideSlowWarnings) {
 				host->NotifyUserMessage(gr->T("hardware transform error - falling back to software"), 2.5f, 0xFF3030FF);
@@ -708,7 +705,7 @@ LinkedShader *ShaderManagerGLES::ApplyFragmentShader(VShaderID VSID, Shader *vs,
 	FShaderID FSID;
 	if (gstate_c.IsDirty(DIRTY_FRAGMENTSHADER_STATE)) {
 		gstate_c.Clean(DIRTY_FRAGMENTSHADER_STATE);
-		ComputeFragmentShaderID(&FSID);
+		ComputeFragmentShaderID(&FSID, draw_->GetBugs());
 	} else {
 		FSID = lastFSID_;
 	}
@@ -767,7 +764,7 @@ std::string Shader::GetShaderString(DebugShaderStringType type, ShaderID id) con
 	case SHADER_STRING_SOURCE_CODE:
 		return source_;
 	case SHADER_STRING_SHORT_DESC:
-		return isFragment_ ? FragmentShaderDesc(id) : VertexShaderDesc(id);
+		return isFragment_ ? FragmentShaderDesc(FShaderID(id)) : VertexShaderDesc(VShaderID(id));
 	default:
 		return "N/A";
 	}
@@ -833,7 +830,7 @@ std::string ShaderManagerGLES::DebugGetShaderString(std::string id, DebugShaderT
 // as sometimes these features might have an effect on the ID bits.
 
 #define CACHE_HEADER_MAGIC 0x83277592
-#define CACHE_VERSION 12
+#define CACHE_VERSION 14
 struct CacheHeader {
 	uint32_t magic;
 	uint32_t version;

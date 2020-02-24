@@ -81,8 +81,6 @@ void TextDrawerQt::DrawString(DrawBuffer &target, const char *str, float x, floa
 	auto iter = cache_.find(entryHash);
 	if (iter != cache_.end()) {
 		entry = iter->second.get();
-		entry->lastUsedFrame = frameCount_;
-		draw_->BindTexture(0, entry->texture);
 	} else {
 		QFont *font = fontMap_.find(fontHash_)->second;
 		QFontMetrics fm(*font);
@@ -104,11 +102,10 @@ void TextDrawerQt::DrawString(DrawBuffer &target, const char *str, float x, floa
 		entry = new TextStringEntry();
 		entry->bmWidth = entry->width = image.width();
 		entry->bmHeight = entry->height = image.height();
-		entry->lastUsedFrame = frameCount_;
 
 		TextureDesc desc{};
 		desc.type = TextureType::LINEAR2D;
-		desc.format = Draw::DataFormat::B4G4R4A4_UNORM_PACK16;
+		desc.format = Draw::DataFormat::R4G4B4A4_UNORM_PACK16;
 		desc.width = entry->bmWidth;
 		desc.height = entry->bmHeight;
 		desc.depth = 1;
@@ -126,8 +123,11 @@ void TextDrawerQt::DrawString(DrawBuffer &target, const char *str, float x, floa
 		delete[] bitmapData;
 		cache_[entryHash] = std::unique_ptr<TextStringEntry>(entry);
 	}
+
 	float w = entry->bmWidth * fontScaleX_;
 	float h = entry->bmHeight * fontScaleY_;
+	entry->lastUsedFrame = frameCount_;
+	draw_->BindTexture(0, entry->texture);
 	DrawBuffer::DoAlign(align, &x, &y, &w, &h);
 	target.DrawTexRect(x, y, x + w, y + h, 0.0f, 0.0f, 1.0f, 1.0f, color);
 	target.Flush(true);

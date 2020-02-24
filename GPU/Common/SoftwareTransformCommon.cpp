@@ -62,13 +62,15 @@ static void SwapUVs(TransformedVertex &a, TransformedVertex &b) {
 
 // Note: 0 is BR and 2 is TL.
 
-static void RotateUV(TransformedVertex v[4], float flippedMatrix[16], float ySign) {
+static void RotateUV(TransformedVertex v[4], float flippedMatrix[16], bool flippedY) {
 	// Transform these two coordinates to figure out whether they're flipped or not.
 	Vec4f tl;
 	Vec3ByMatrix44(tl.AsArray(), v[2].pos, flippedMatrix);
 
 	Vec4f br;
 	Vec3ByMatrix44(br.AsArray(), v[0].pos, flippedMatrix);
+
+	float ySign = flippedY ? -1.0 : 1.0;
 
 	const float invtlw = 1.0f / tl.w;
 	const float invbrw = 1.0f / br.w;
@@ -153,6 +155,7 @@ static int ColorIndexOffset(int prim, GEShadeMode shadeMode, bool clearMode) {
 	return 0;
 }
 
+// NOTE: The viewport must be up to date!
 void SoftwareTransform(
 	int prim, int vertexCount, u32 vertType, u16 *&inds, int indexType,
 	const DecVtxFormat &decVtxFormat, int &maxIndex, TransformedVertex *&drawBuffer, int &numTrans, bool &drawIndexed, const SoftwareTransformParams *params, SoftwareTransformResult *result) {
@@ -161,7 +164,6 @@ void SoftwareTransform(
 	TextureCacheCommon *texCache = params->texCache;
 	TransformedVertex *transformed = params->transformed;
 	TransformedVertex *transformedExpanded = params->transformedExpanded;
-	float ySign = 1.0f;
 	bool throughmode = (vertType & GE_VTYPE_THROUGH_MASK) != 0;
 	bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled();
 
@@ -191,9 +193,9 @@ void SoftwareTransform(
 		fog_slope = std::signbit(fog_slope) ? -65535.0f : 65535.0f;
 	}
 
-	int colorIndOffset = 0;
+	int provokeIndOffset = 0;
 	if (params->provokeFlatFirst) {
-		colorIndOffset = ColorIndexOffset(prim, gstate.getShadeMode(), gstate.isModeClear());
+		provokeIndOffset = ColorIndexOffset(prim, gstate.getShadeMode(), gstate.isModeClear());
 	}
 
 	VertexReader reader(decoded, decVtxFormat, vertType);
@@ -206,8 +208,8 @@ void SoftwareTransform(
 			reader.ReadPos(vert.pos);
 
 			if (reader.hasColor0()) {
-				if (colorIndOffset != 0 && index + colorIndOffset < maxIndex) {
-					reader.Goto(index + colorIndOffset);
+				if (provokeIndOffset != 0 && index + provokeIndOffset < maxIndex) {
+					reader.Goto(index + provokeIndOffset);
 					reader.ReadColor0_8888(vert.color0);
 					reader.Goto(index);
 				} else {
@@ -247,10 +249,24 @@ void SoftwareTransform(
 			Vec3f worldnormal(0, 0, 1);
 			reader.ReadPos(pos);
 
+			float ruv[2] = { 0.0f, 0.0f };
+			if (reader.hasUV())
+				reader.ReadUV(ruv);
+
+			// Read all the provoking vertex values here.
+			Vec4f unlitColor;
+			if (provokeIndOffset != 0 && index + provokeIndOffset < maxIndex)
+				reader.Goto(index + provokeIndOffset);
+			if (reader.hasColor0())
+				reader.ReadColor0(unlitColor.AsArray());
+			else
+				unlitColor = Vec4f::FromRGBA(gstate.getMaterialAmbientRGBA());
+			if (reader.hasNormal())
+				reader.ReadNrm(normal.AsArray());
+
 			if (!skinningEnabled) {
 				Vec3ByMatrix43(out, pos, gstate.worldMatrix);
 				if (reader.hasNormal()) {
-					reader.ReadNrm(normal.AsArray());
 					if (gstate.areNormalsReversed()) {
 						normal = -normal;
 					}
@@ -259,9 +275,9 @@ void SoftwareTransform(
 				}
 			} else {
 				float weights[8];
+				// TODO: For flat, are weights from the provoking used for color/normal?
+				reader.Goto(index);
 				reader.ReadWeights(weights);
-				if (reader.hasNormal())
-					reader.ReadNrm(normal.AsArray());
 
 				// Skinning
 				Vec3f psum(0, 0, 0);
@@ -291,20 +307,7 @@ void SoftwareTransform(
 				}
 			}
 
-			// Perform lighting here if enabled. don't need to check through, it's checked above.
-			Vec4f unlitColor = Vec4f(1, 1, 1, 1);
-			if (reader.hasColor0()) {
-				if (colorIndOffset != 0 && index + colorIndOffset < maxIndex) {
-					reader.Goto(index + colorIndOffset);
-					reader.ReadColor0(&unlitColor.x);
-					reader.Goto(index);
-				} else {
-					reader.ReadColor0(&unlitColor.x);
-				}
-			} else {
-				unlitColor = Vec4f::FromRGBA(gstate.getMaterialAmbientRGBA());
-			}
-
+			// Perform lighting here if enabled.
 			if (gstate.isLightingEnabled()) {
 				float litColor0[4];
 				float litColor1[4];
@@ -338,10 +341,6 @@ void SoftwareTransform(
 				}
 			}
 
-			float ruv[2] = {0.0f, 0.0f};
-			if (reader.hasUV())
-				reader.ReadUV(ruv);
-
 			// Perform texture coordinate generation after the transform and lighting - one style of UV depends on lights.
 			switch (gstate.getUVGenMode()) {
 			case GE_TEXMAP_TEXTURE_COORDS:	// UV mapping
@@ -354,6 +353,8 @@ void SoftwareTransform(
 
 			case GE_TEXMAP_TEXTURE_MATRIX:
 				{
+					// TODO: What's the correct behavior with flat shading?  Provoked normal or real normal?
+
 					// Projection mapping
 					Vec3f source;
 					switch (gstate.getUVProjMode())	{
@@ -391,8 +392,23 @@ void SoftwareTransform(
 			case GE_TEXMAP_ENVIRONMENT_MAP:
 				// Shade mapping - use two light sources to generate U and V.
 				{
-					Vec3f lightpos0 = Vec3f(&lighter.lpos[gstate.getUVLS0() * 3]).Normalized();
-					Vec3f lightpos1 = Vec3f(&lighter.lpos[gstate.getUVLS1() * 3]).Normalized();
+					auto getLPosFloat = [&](int l, int i) {
+						return getFloat24(gstate.lpos[l * 3 + i]);
+					};
+					auto getLPos = [&](int l) {
+						return Vec3f(getLPosFloat(l, 0), getLPosFloat(l, 1), getLPosFloat(l, 2));
+					};
+					auto calcShadingLPos = [&](int l) {
+						Vec3f pos = getLPos(l);
+						if (pos.Length2() == 0.0f) {
+							return Vec3f(0.0f, 0.0f, 1.0f);
+						} else {
+							return pos.Normalized();
+						}
+					};
+					// Might not have lighting enabled, so don't use lighter.
+					Vec3f lightpos0 = calcShadingLPos(gstate.getUVLS0());
+					Vec3f lightpos1 = calcShadingLPos(gstate.getUVLS1());
 
 					uv[0] = (1.0f + Dot(lightpos0, worldnormal))/2.0f;
 					uv[1] = (1.0f + Dot(lightpos1, worldnormal))/2.0f;
@@ -443,10 +459,12 @@ void SoftwareTransform(
 		// If alpha is not allowed to be separate, it must match for both depth/stencil and color.  Vulkan requires this.
 		bool alphaMatchesColor = gstate.isClearModeColorMask() == gstate.isClearModeAlphaMask();
 		bool depthMatchesStencil = gstate.isClearModeAlphaMask() == gstate.isClearModeDepthMask();
-		if (params->allowSeparateAlphaClear || (alphaMatchesColor && depthMatchesStencil)) {
+		bool matchingComponents = params->allowSeparateAlphaClear || (alphaMatchesColor && depthMatchesStencil);
+		bool stencilNotMasked = !gstate.isClearModeAlphaMask() || gstate.getStencilWriteMask() == 0x00;
+		if (matchingComponents && stencilNotMasked) {
 			result->color = transformed[1].color0_32;
 			// Need to rescale from a [0, 1] float.  This is the final transformed value.
-			result->depth = ToScaledDepth((s16)(int)(transformed[1].z * 65535.0f));
+			result->depth = ToScaledDepthFromIntegerScale((int)(transformed[1].z * 65535.0f));
 			result->action = SW_CLEAR;
 			gpuStats.numClears++;
 			return;
@@ -499,20 +517,24 @@ void SoftwareTransform(
 	numTrans = 0;
 	drawIndexed = false;
 
+	bool useBufferedRendering = g_Config.iRenderingMode != FB_NON_BUFFERED_MODE;
+
+	bool flippedY = g_Config.iGPUBackend == (int)GPUBackend::OPENGL && !useBufferedRendering;
+
 	if (prim != GE_PRIM_RECTANGLES) {
 		// We can simply draw the unexpanded buffer.
 		numTrans = vertexCount;
 		drawIndexed = true;
 	} else {
-		bool useBufferedRendering = g_Config.iRenderingMode != FB_NON_BUFFERED_MODE;
-		if (useBufferedRendering)
-			ySign = -ySign;
+		// Pretty bad hackery where we re-do the transform (in RotateUV) to see if the vertices are flipped in screen space.
+		// Since we've already got API-specific assumptions (Y direction, etc) baked into the projMatrix (which we arguably shouldn't),
+		// this gets nasty and very hard to understand.
 
 		float flippedMatrix[16];
 		if (!throughmode) {
 			memcpy(&flippedMatrix, gstate.projMatrix, 16 * sizeof(float));
 
-			const bool invertedY = useBufferedRendering ? (gstate_c.vpHeight < 0) : (gstate_c.vpHeight > 0);
+			const bool invertedY = flippedY ? (gstate_c.vpHeight < 0) : (gstate_c.vpHeight > 0);
 			if (invertedY) {
 				flippedMatrix[1] = -flippedMatrix[1];
 				flippedMatrix[5] = -flippedMatrix[5];
@@ -568,7 +590,7 @@ void SoftwareTransform(
 			if (throughmode)
 				RotateUVThrough(trans);
 			else
-				RotateUV(trans, flippedMatrix, ySign);
+				RotateUV(trans, flippedMatrix, flippedY);
 
 			// Triangle: BR-TR-TL
 			indsOut[0] = i * 2 + 0;

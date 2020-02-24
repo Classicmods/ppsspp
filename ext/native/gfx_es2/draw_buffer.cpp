@@ -80,10 +80,6 @@ void DrawBuffer::Begin(Draw::Pipeline *program) {
 	count_ = 0;
 }
 
-void DrawBuffer::End() {
-	// Currently does nothing, but call it!
-}
-
 void DrawBuffer::Flush(bool set_blend_state) {
 	using namespace Draw;
 	if (count_ == 0)
@@ -96,7 +92,7 @@ void DrawBuffer::Flush(bool set_blend_state) {
 	draw_->BindPipeline(pipeline_);
 
 	VsTexColUB ub{};
-	memcpy(ub.WorldViewProj, drawMatrix_.getReadPtr(), sizeof(Matrix4x4));
+	memcpy(ub.WorldViewProj, drawMatrix_.getReadPtr(), sizeof(Lin::Matrix4x4));
 	draw_->UpdateDynamicUniformBuffer(&ub, sizeof(ub));
 	if (vbuf_) {
 		draw_->UpdateBuffer(vbuf_, (const uint8_t *)verts_, 0, sizeof(Vertex) * count_, Draw::UPDATE_DISCARD);
@@ -499,8 +495,12 @@ void DrawBuffer::DrawTextRect(int font, const char *text, float x, float y, floa
 // ROTATE_* doesn't yet work right.
 void DrawBuffer::DrawText(int font, const char *text, float x, float y, Color color, int align) {
 	// rough estimate
-	if (count_ + strlen(text) * 6 > MAX_VERTS) {
+	size_t textLen = strlen(text);
+	if (count_ + textLen * 6 > MAX_VERTS) {
 		Flush(true);
+		if (textLen * 6 >= MAX_VERTS) {
+			textLen = std::min(MAX_VERTS / 6 - 10, (int)textLen);
+		}
 	}
 
 	const AtlasFont &atlasfont = *atlas->fonts[font];
@@ -512,14 +512,14 @@ void DrawBuffer::DrawText(int font, const char *text, float x, float y, Color co
 	}
 
 	if (align & ROTATE_90DEG_LEFT) {
-		x -= atlasfont.ascend*fontscaley;
+		x -= atlasfont.ascend * fontscaley;
 		// y += h;
+	} else {
+		y += atlasfont.ascend * fontscaley;
 	}
-	else
-		y += atlasfont.ascend*fontscaley;
 	float sx = x;
 	UTF8 utf(text);
-	while (true) {
+	for (size_t i = 0; i < textLen; i++) {
 		if (utf.end())
 			break;
 		cval = utf.next();

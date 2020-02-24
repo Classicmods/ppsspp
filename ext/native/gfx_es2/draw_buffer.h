@@ -63,7 +63,7 @@ public:
 	~DrawBuffer();
 
 	void Begin(Draw::Pipeline *pipeline);
-	void End();
+	void Flush(bool set_blend_state = true);
 
 	// TODO: Enforce these. Now Init is autocalled and shutdown not called.
 	void Init(Draw::DrawContext *t3d, Draw::Pipeline *pipeline);
@@ -73,8 +73,6 @@ public:
 	Draw::InputLayout *CreateInputLayout(Draw::DrawContext *t3d);
 
 	int Count() const { return count_; }
-
-	void Flush(bool set_blend_state = true);
 
 	void Rect(float x, float y, float w, float h, uint32_t color, int align = ALIGN_TOPLEFT);
 	void hLine(float x1, float y, float x2, uint32_t color);
@@ -99,7 +97,7 @@ public:
 
 	void V(float x, float y, float z, uint32_t color, float u, float v);
 	void V(float x, float y, uint32_t color, float u, float v) {
-		V(x, y, 0.0f, color, u, v);
+		V(x, y, curZ_, color, u, v);
 	}
 
 	void Circle(float x, float y, float radius, float thickness, int segments, float startAngle, uint32_t color, float u_mul);
@@ -144,7 +142,7 @@ public:
 
 	static void DoAlign(int flags, float *x, float *y, float *w, float *h);
 
-	void PushDrawMatrix(const Matrix4x4 &m) {
+	void PushDrawMatrix(const Lin::Matrix4x4 &m) {
 		drawMatrixStack_.push_back(drawMatrix_);
 		drawMatrix_ = m;
 	}
@@ -154,7 +152,7 @@ public:
 		drawMatrixStack_.pop_back();
 	}
 
-	Matrix4x4 GetDrawMatrix() {
+	Lin::Matrix4x4 GetDrawMatrix() {
 		return drawMatrix_;
 	}
 
@@ -168,6 +166,10 @@ public:
 		alphaStack_.pop_back();
 	}
 
+	void SetCurZ(float curZ) {
+		curZ_ = curZ;
+	}
+
 private:
 	struct Vertex {
 		float x, y, z;
@@ -175,8 +177,8 @@ private:
 		uint32_t rgba;
 	};
 
-	Matrix4x4 drawMatrix_;
-	std::vector<Matrix4x4> drawMatrixStack_;
+	Lin::Matrix4x4 drawMatrix_;
+	std::vector<Lin::Matrix4x4> drawMatrixStack_;
 
 	float alpha_ = 1.0f;
 	std::vector<float> alphaStack_;
@@ -193,5 +195,7 @@ private:
 	bool inited_;
 	float fontscalex;
 	float fontscaley;
+
+	float curZ_ = 0.0f;
 };
 

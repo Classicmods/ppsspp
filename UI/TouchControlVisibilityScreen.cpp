@@ -42,8 +42,8 @@ private:
 void TouchControlVisibilityScreen::CreateViews() {
 	using namespace UI;
 
-	I18NCategory *di = GetI18NCategory("Dialog");
-	I18NCategory *co = GetI18NCategory("Controls");
+	auto di = GetI18NCategory("Dialog");
+	auto co = GetI18NCategory("Controls");
 
 	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 
@@ -80,6 +80,7 @@ void TouchControlVisibilityScreen::CreateViews() {
 	toggles_.push_back({ "Select", &g_Config.touchSelectKey.show, I_SELECT });
 	toggles_.push_back({ "Dpad", &g_Config.touchDpad.show, -1 });
 	toggles_.push_back({ "Analog Stick", &g_Config.touchAnalogStick.show, -1 });
+	toggles_.push_back({ "Right Analog Stick\n(not used by most games)", &g_Config.touchRightAnalogStick.show, -1 });
 	toggles_.push_back({ "Unthrottle", &g_Config.touchUnthrottleKey.show, -1 });
 	toggles_.push_back({ "Combo0", &g_Config.touchCombo0.show, I_1 });
 	toggles_.push_back({ "Combo1", &g_Config.touchCombo1.show, I_2 });
@@ -88,8 +89,9 @@ void TouchControlVisibilityScreen::CreateViews() {
 	toggles_.push_back({ "Combo4", &g_Config.touchCombo4.show, I_5 });
 	toggles_.push_back({ "Alt speed 1", &g_Config.touchSpeed1Key.show, -1 });
 	toggles_.push_back({ "Alt speed 2", &g_Config.touchSpeed2Key.show, -1 });
+	toggles_.push_back({ "Rapid Fire", &g_Config.touchRapidFireKey.show, -1 });
 
-	I18NCategory *mc = GetI18NCategory("MappableControls");
+	auto mc = GetI18NCategory("MappableControls");
 
 	for (auto toggle : toggles_) {
 		LinearLayout *row = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
@@ -106,14 +108,14 @@ void TouchControlVisibilityScreen::CreateViews() {
 		}
 
 		choice->SetCentered(true);
-		
+
 		row->Add(choice);
 		grid->Add(row);
 	}
 }
 
 void TouchControlVisibilityScreen::onFinish(DialogResult result) {
-	g_Config.Save();
+	g_Config.Save("TouchControlVisibilityScreen::onFinish");
 }
 
 UI::EventReturn TouchControlVisibilityScreen::OnToggleAll(UI::EventParams &e) {

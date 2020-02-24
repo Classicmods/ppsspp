@@ -22,7 +22,10 @@ class VulkanPushBuffer {
 	};
 
 public:
-	VulkanPushBuffer(VulkanContext *vulkan, size_t size);
+	// NOTE: If you create a push buffer with only VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	// then you can't use any of the push functions as pointers will not be reachable from the CPU.
+	// You must in this case use Allocate() only, and pass the returned offset and the VkBuffer to Vulkan APIs.
+	VulkanPushBuffer(VulkanContext *vulkan, size_t size, VkBufferUsageFlags usage, VkMemoryPropertyFlags memoryPropertyMask = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	~VulkanPushBuffer();
 
 	void Destroy(VulkanContext *vulkan);
@@ -35,15 +38,18 @@ public:
 		offset_ = 0;
 		// Note: we must defrag because some buffers may be smaller than size_.
 		Defragment(vulkan);
-		Map();
+		if (memoryPropertyMask_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+			Map();
 	}
 
 	void BeginNoReset() {
-		Map();
+		if (memoryPropertyMask_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+			Map();
 	}
 
 	void End() {
-		Unmap();
+		if (memoryPropertyMask_ & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+			Unmap();
 	}
 
 	void Map();
@@ -108,13 +114,15 @@ private:
 	void NextBuffer(size_t minSize);
 	void Defragment(VulkanContext *vulkan);
 
-	VkDevice device_;
+	VulkanContext *vulkan_;
+	VkMemoryPropertyFlags memoryPropertyMask_;
+
 	std::vector<BufInfo> buffers_;
-	size_t buf_;
-	size_t offset_;
-	size_t size_;
-	uint32_t memoryTypeIndex_;
-	uint8_t *writePtr_;
+	size_t buf_ = 0;
+	size_t offset_ = 0;
+	size_t size_ = 0;
+	uint8_t *writePtr_ = nullptr;
+	VkBufferUsageFlags usage_;
 };
 
 // VulkanDeviceAllocator
@@ -174,6 +182,7 @@ private:
 
 	struct Slab {
 		VkDeviceMemory deviceMemory;
+		uint32_t memoryTypeIndex = UNDEFINED_MEMORY_TYPE;
 		std::vector<uint8_t> usage;
 		std::unordered_map<size_t, size_t> allocSizes;
 		std::unordered_map<size_t, UsageInfo> tags;
@@ -200,7 +209,7 @@ private:
 		freeInfo->allocator->ExecuteFree(freeInfo);  // this deletes freeInfo
 	}
 
-	bool AllocateSlab(VkDeviceSize minBytes);
+	bool AllocateSlab(VkDeviceSize minBytes, int memoryTypeIndex);
 	bool AllocateFromSlab(Slab &slab, size_t &start, size_t blocks, const std::string &tag);
 	void Decimate();
 	void DoTouch(VkDeviceMemory deviceMemory, size_t offset);
@@ -212,6 +221,5 @@ private:
 	size_t lastSlab_ = 0;
 	size_t minSlabSize_;
 	const size_t maxSlabSize_;
-	uint32_t memoryTypeIndex_ = UNDEFINED_MEMORY_TYPE;
 	bool destroyed_ = false;
 };

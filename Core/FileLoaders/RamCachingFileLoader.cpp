@@ -28,7 +28,7 @@
 
 // Takes ownership of backend.
 RamCachingFileLoader::RamCachingFileLoader(FileLoader *backend)
-	: backend_(backend) {
+	: ProxiedFileLoader(backend) {
 	filesize_ = backend->FileSize();
 	if (filesize_ > 0) {
 		InitCache();
@@ -39,37 +39,31 @@ RamCachingFileLoader::~RamCachingFileLoader() {
 	if (filesize_ > 0) {
 		ShutdownCache();
 	}
-	// Takes ownership.
-	delete backend_;
 }
 
 bool RamCachingFileLoader::Exists() {
 	if (exists_ == -1) {
-		exists_ = backend_->Exists() ? 1 : 0;
+		exists_ = ProxiedFileLoader::Exists() ? 1 : 0;
 	}
 	return exists_ == 1;
 }
 
 bool RamCachingFileLoader::ExistsFast() {
 	if (exists_ == -1) {
-		return backend_->ExistsFast();
+		return ProxiedFileLoader::ExistsFast();
 	}
 	return exists_ == 1;
 }
 
 bool RamCachingFileLoader::IsDirectory() {
 	if (isDirectory_ == -1) {
-		isDirectory_ = backend_->IsDirectory() ? 1 : 0;
+		isDirectory_ = ProxiedFileLoader::IsDirectory() ? 1 : 0;
 	}
 	return isDirectory_ == 1;
 }
 
 s64 RamCachingFileLoader::FileSize() {
 	return filesize_;
-}
-
-std::string RamCachingFileLoader::Path() const {
-	return backend_->Path();
 }
 
 size_t RamCachingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags) {
@@ -111,9 +105,11 @@ void RamCachingFileLoader::ShutdownCache() {
 
 	// We can't delete while the thread is running, so have to wait.
 	// This should only happen from the menu.
-	while (aheadThread_) {
+	while (aheadThreadRunning_) {
 		sleep_ms(1);
 	}
+	if (aheadThread_.joinable())
+		aheadThread_.join();
 
 	std::lock_guard<std::mutex> guard(blocksMutex_);
 	blocks_.clear();
@@ -124,12 +120,12 @@ void RamCachingFileLoader::ShutdownCache() {
 }
 
 void RamCachingFileLoader::Cancel() {
-	if (aheadThread_) {
+	if (aheadThreadRunning_) {
 		std::lock_guard<std::mutex> guard(blocksMutex_);
 		aheadCancel_ = true;
 	}
 
-	backend_->Cancel();
+	ProxiedFileLoader::Cancel();
 }
 
 size_t RamCachingFileLoader::ReadFromCache(s64 pos, size_t bytes, void *data) {
@@ -219,14 +215,16 @@ void RamCachingFileLoader::StartReadAhead(s64 pos) {
 
 	std::lock_guard<std::mutex> guard(blocksMutex_);
 	aheadPos_ = pos;
-	if (aheadThread_) {
+	if (aheadThreadRunning_) {
 		// Already going.
 		return;
 	}
 
-	aheadThread_ = true;
+	aheadThreadRunning_ = true;
 	aheadCancel_ = false;
-	std::thread th([this] {
+	if (aheadThread_.joinable())
+		aheadThread_.join();
+	aheadThread_ = std::thread([this] {
 		setCurrentThreadName("FileLoaderReadAhead");
 
 		while (aheadRemaining_ != 0 && !aheadCancel_) {
@@ -249,9 +247,8 @@ void RamCachingFileLoader::StartReadAhead(s64 pos) {
 			}
 		}
 
-		aheadThread_ = false;
+		aheadThreadRunning_ = false;
 	});
-	th.detach();
 }
 
 u32 RamCachingFileLoader::NextAheadBlock() {
@@ -269,8 +266,4 @@ u32 RamCachingFileLoader::NextAheadBlock() {
 	}
 
 	return 0xFFFFFFFF;
-}
-
-bool RamCachingFileLoader::IsRemote() {
-	return backend_->IsRemote();
 }

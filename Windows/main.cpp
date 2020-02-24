@@ -21,15 +21,19 @@
 
 #include "Common/CommonWindows.h"
 #include "Common/OSVersion.h"
+#include "Common/Vulkan/VulkanLoader.h"
+#include "ppsspp_config.h"
 
 #include <Wbemidl.h>
 #include <shellapi.h>
+#include <ShlObj.h>
 #include <mmsystem.h>
 
+#include "base/NativeApp.h"
 #include "base/display.h"
 #include "file/vfs.h"
 #include "file/zip_read.h"
-#include "base/NativeApp.h"
+#include "i18n/i18n.h"
 #include "profiler/profiler.h"
 #include "thread/threadutil.h"
 #include "util/text/utf8.h"
@@ -54,9 +58,11 @@
 #include "Windows/Debugger/Debugger_Disasm.h"
 #include "Windows/Debugger/Debugger_MemoryDlg.h"
 #include "Windows/Debugger/Debugger_VFPUDlg.h"
+#if PPSSPP_API(ANY_GL)
 #include "Windows/GEDebugger/GEDebugger.h"
-
+#endif
 #include "Windows/W32Util/DialogManager.h"
+#include "Windows/W32Util/ShellUtil.h"
 
 #include "Windows/Debugger/CtrlDisAsmView.h"
 #include "Windows/Debugger/CtrlMemView.h"
@@ -78,9 +84,11 @@ extern "C" {
 extern "C" {
 	__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
+#if PPSSPP_API(ANY_GL)
+CGEDebugger* geDebuggerWindow = 0;
+#endif
 
 CDisasm *disasmWindow[MAX_CPUCOUNT] = {0};
-CGEDebugger *geDebuggerWindow = 0;
 CMemoryDlg *memoryWindow[MAX_CPUCOUNT] = {0};
 
 static std::string langRegion;
@@ -89,6 +97,14 @@ static std::string gpuDriverVersion;
 
 HMENU g_hPopupMenus;
 int g_activeWindow = 0;
+
+void OpenDirectory(const char *path) {
+	PIDLIST_ABSOLUTE pidl = ILCreateFromPath(ConvertUTF8ToWString(ReplaceAll(path, "/", "\\")).c_str());
+	if (pidl) {
+		SHOpenFolderAndSelectItems(pidl, 0, NULL, 0);
+		ILFree(pidl);
+	}
+}
 
 void LaunchBrowser(const char *url) {
 	ShellExecute(NULL, L"open", ConvertUTF8ToWString(url).c_str(), NULL, NULL, SW_SHOWNORMAL);
@@ -110,7 +126,7 @@ std::string GetVideoCardDriverVersion() {
 	}
 
 	IWbemLocator *pIWbemLocator = NULL;
-	hr = CoCreateInstance(__uuidof(WbemLocator), NULL, CLSCTX_INPROC_SERVER, 
+	hr = CoCreateInstance(__uuidof(WbemLocator), NULL, CLSCTX_INPROC_SERVER,
 		__uuidof(IWbemLocator), (LPVOID *)&pIWbemLocator);
 	if (FAILED(hr)) {
 		CoUninitialize();
@@ -127,9 +143,9 @@ std::string GetVideoCardDriverVersion() {
 		return retvalue;
 	}
 
-	hr = CoSetProxyBlanket(pIWbemServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, 
+	hr = CoSetProxyBlanket(pIWbemServices, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE,
 		NULL, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL,EOAC_DEFAULT);
-	
+
 	BSTR bstrWQL = SysAllocString(L"WQL");
 	BSTR bstrPath = SysAllocString(L"select * from Win32_VideoController");
 	IEnumWbemClassObject* pEnum;
@@ -216,14 +232,21 @@ int System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
 		return winAudioBackend ? winAudioBackend->GetSampleRate() : -1;
-	case SYSPROP_DISPLAY_REFRESH_RATE:
-		return 60000;
 	case SYSPROP_DEVICE_TYPE:
 		return DEVICE_TYPE_DESKTOP;
-	case SYSPROP_DISPLAY_DPI:
-		return ScreenDPI();
 	case SYSPROP_DISPLAY_COUNT:
 		return GetSystemMetrics(SM_CMONITORS);
+	default:
+		return -1;
+	}
+}
+
+float System_GetPropertyFloat(SystemProperty prop) {
+	switch (prop) {
+	case SYSPROP_DISPLAY_REFRESH_RATE:
+		return 60.f;
+	case SYSPROP_DISPLAY_DPI:
+		return (float)ScreenDPI();
 	default:
 		return -1;
 	}
@@ -273,6 +296,11 @@ void System_SendMessage(const char *command, const char *parameter) {
 		}
 	} else if (!strcmp(command, "browse_file")) {
 		MainWindow::BrowseAndBoot("");
+	} else if (!strcmp(command, "browse_folder")) {
+		auto mm = GetI18NCategory("MainMenu");
+		std::string folder = W32Util::BrowseForFolder(MainWindow::GetHWND(), mm->T("Choose folder"));
+		if (folder.size())
+			NativeMessageReceived("browse_folderSelect", folder.c_str());
 	} else if (!strcmp(command, "bgImage_browse")) {
 		MainWindow::BrowseBackground();
 	} else if (!strcmp(command, "toggle_fullscreen")) {
@@ -350,6 +378,39 @@ static std::string GetDefaultLangRegion() {
 	}
 }
 
+static const int EXIT_CODE_VULKAN_WORKS = 42;
+
+static bool DetectVulkanInExternalProcess() {
+	std::wstring workingDirectory;
+	std::wstring moduleFilename;
+	W32Util::GetSelfExecuteParams(workingDirectory, moduleFilename);
+
+	const wchar_t *cmdline = L"--vulkan-available-check";
+
+	SHELLEXECUTEINFO info{ sizeof(SHELLEXECUTEINFO) };
+	info.fMask = SEE_MASK_NOCLOSEPROCESS;
+	info.lpFile = moduleFilename.c_str();
+	info.lpParameters = cmdline;
+	info.lpDirectory = workingDirectory.c_str();
+	info.nShow = SW_HIDE;
+	if (ShellExecuteEx(&info) != TRUE) {
+		return false;
+	}
+	if (info.hProcess == nullptr) {
+		return false;
+	}
+
+	DWORD result = WaitForSingleObject(info.hProcess, 10000);
+	DWORD exitCode = 0;
+	if (result == WAIT_FAILED || GetExitCodeProcess(info.hProcess, &exitCode) == 0) {
+		CloseHandle(info.hProcess);
+		return false;
+	}
+	CloseHandle(info.hProcess);
+
+	return exitCode == EXIT_CODE_VULKAN_WORKS;
+}
+
 std::vector<std::wstring> GetWideCmdLine() {
 	wchar_t **wargv;
 	int wargc = -1;
@@ -361,9 +422,7 @@ std::vector<std::wstring> GetWideCmdLine() {
 	return wideArgs;
 }
 
-int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLine, int iCmdShow) {
-	setCurrentThreadName("Main");
-
+static void WinMainInit() {
 	CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	net::Init();  // This needs to happen before we load the config. So on Windows we also run it in Main. It's fine to call multiple times.
 
@@ -384,6 +443,21 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	// FMA3 support in the 2013 CRT is broken on Vista and Windows 7 RTM (fixed in SP1). Just disable it.
 	_set_FMA3_enable(0);
 #endif
+}
+
+static void WinMainCleanup() {
+	if (g_Config.bRestartRequired) {
+		W32Util::ExitAndRestart();
+	}
+
+	net::Shutdown();
+	CoUninitialize();
+}
+
+int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLine, int iCmdShow) {
+	setCurrentThreadName("Main");
+
+	WinMainInit();
 
 #ifndef _DEBUG
 	bool showLog = false;
@@ -424,8 +498,9 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 	LogManager::Init();
 
-	// On Win32 it makes more sense to initialize the system directories here 
+	// On Win32 it makes more sense to initialize the system directories here
 	// because the next place it was called was in the EmuThread, and it's too late by then.
+	g_Config.internalDataDirectory = W32Util::UserDocumentsPath();
 	InitSysDirectories();
 
 	// Load config up here, because those changes below would be overwritten
@@ -486,10 +561,28 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 					g_Config.bSoftwareRendering = true;
 				}
 			}
+
+			// This should only be called by DetectVulkanInExternalProcess().
+			if (wideArgs[i] == L"--vulkan-available-check") {
+				// Just call it, this way it will crash here if it doesn't work.
+				// (this is an external process.)
+				bool result = VulkanMayBeAvailable();
+
+				LogManager::Shutdown();
+				WinMainCleanup();
+				return result ? EXIT_CODE_VULKAN_WORKS : EXIT_FAILURE;
+			}
 		}
 	}
 #ifdef _DEBUG
 	g_Config.bEnableLogging = true;
+#endif
+
+#ifndef _DEBUG
+	// See #11719 - too many Vulkan drivers crash on basic init.
+	if (g_Config.IsBackendEnabled(GPUBackend::VULKAN, false)) {
+		VulkanSetAvailable(DetectVulkanInExternalProcess());
+	}
 #endif
 
 	if (iCmdShow == SW_MAXIMIZE) {
@@ -503,7 +596,7 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 	//   - The -l switch is expected to show the log console, REGARDLESS of config settings.
 	//   - It should be possible to log to a file without showing the console.
 	LogManager::GetInstance()->GetConsoleListener()->Init(showLog, 150, 120, "PPSSPP Debug Console");
-	
+
 	if (debugLogLevel)
 		LogManager::GetInstance()->SetAllLogLevels(LogTypes::LDEBUG);
 
@@ -517,13 +610,14 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 	HWND hwndMain = MainWindow::GetHWND();
 	HWND hwndDisplay = MainWindow::GetDisplayHWND();
-	
+
 	//initialize custom controls
 	CtrlDisAsmView::init();
 	CtrlMemView::init();
 	CtrlRegisterList::init();
+#if PPSSPP_API(ANY_GL)
 	CGEDebugger::Init();
-
+#endif
 	DialogManager::AddDlg(vfpudlg = new CVFPUDlg(_hInstance, hwndMain, currentDebugMIPS));
 
 	MainWindow::CreateDebugWindows();
@@ -549,7 +643,7 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 		{
 			//hack to enable/disable menu command accelerate keys
 			MainWindow::UpdateCommands();
-			 
+
 			//hack to make it possible to get to main window from floating windows with Esc
 			if (msg.hwnd != hwndMain && msg.wParam == VK_ESCAPE)
 				BringWindowToTop(hwndMain);
@@ -588,20 +682,12 @@ int WINAPI WinMain(HINSTANCE _hInstance, HINSTANCE hPrevInstance, LPSTR szCmdLin
 
 	VFSShutdown();
 
-	InputDevice::StopPolling();
-
 	MainWindow::DestroyDebugWindows();
 	DialogManager::DestroyAll();
 	timeEndPeriod(1);
 
 	LogManager::Shutdown();
-
-	if (g_Config.bRestartRequired) {
-		W32Util::ExitAndRestart();
-	}
-
-	net::Shutdown();
-	CoUninitialize();
+	WinMainCleanup();
 
 	return 0;
 }

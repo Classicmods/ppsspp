@@ -95,6 +95,25 @@ bool IsVistaOrHigher() {
 #endif
 }
 
+bool IsWin7OrHigher() {
+#if PPSSPP_PLATFORM(UWP)
+	return true;
+#else
+	OSVERSIONINFOEX osvi;
+	DWORDLONG dwlConditionMask = 0;
+	int op = VER_GREATER_EQUAL;
+	ZeroMemory(&osvi, sizeof(osvi));
+	osvi.dwOSVersionInfoSize = sizeof(osvi);
+	osvi.dwMajorVersion = 6;  // Win7 is 6.1
+	osvi.dwMinorVersion = 1;
+
+	VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, op);
+	VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, op);
+
+	return VerifyVersionInfo(&osvi, VER_MAJORVERSION | VER_MINORVERSION, dwlConditionMask) != FALSE;
+#endif
+}
+
 std::string GetWindowsVersion() {
 	const bool IsWindowsXPSP2 = DoesVersionMatchWindows(5, 1, 2, 0, false);
 	const bool IsWindowsXPSP3 = DoesVersionMatchWindows(5, 1, 3, 0, false);
@@ -125,15 +144,20 @@ std::string GetWindowsSystemArchitecture() {
 	ZeroMemory(&sysinfo, sizeof(SYSTEM_INFO));
 	GetNativeSystemInfo(&sysinfo);
 
-	if (sysinfo.wProcessorArchitecture & PROCESSOR_ARCHITECTURE_AMD64)
-		return "(x64)";
-	// Need to check for equality here, since ANDing with 0 is always 0.
-	else if (sysinfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL)
+	switch (sysinfo.wProcessorArchitecture) {
+	case PROCESSOR_ARCHITECTURE_INTEL:
 		return "(x86)";
-	else if (sysinfo.wProcessorArchitecture & PROCESSOR_ARCHITECTURE_ARM)
+	case PROCESSOR_ARCHITECTURE_AMD64:
+		return "(x64)";
+	case PROCESSOR_ARCHITECTURE_ARM:
 		return "(ARM)";
-	else
+#ifdef PROCESSOR_ARCHITECTURE_ARM64
+	case PROCESSOR_ARCHITECTURE_ARM64:
+		return "(ARM64)";
+#endif
+	default:
 		return "(Unknown)";
+	}
 }
 
 #endif

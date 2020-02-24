@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 // The Native App API.
 //
@@ -114,6 +115,7 @@ enum {
 	HAPTIC_LONG_PRESS_ACTIVATED = -3,
 };
 void Vibrate(int length_ms);
+void OpenDirectory(const char *path);
 void LaunchBrowser(const char *url);
 void LaunchMarket(const char *url);
 void LaunchEmail(const char *email_address);
@@ -146,7 +148,8 @@ enum SystemProperty {
 	SYSPROP_SYSTEMVERSION,
 	SYSPROP_DISPLAY_XRES,
 	SYSPROP_DISPLAY_YRES,
-	SYSPROP_DISPLAY_REFRESH_RATE,  // returns 1000*the refresh rate in Hz as it can be non-integer
+	SYSPROP_DISPLAY_REFRESH_RATE,
+	SYSPROP_DISPLAY_LOGICAL_DPI,
 	SYSPROP_DISPLAY_DPI,
 	SYSPROP_DISPLAY_COUNT,
 	SYSPROP_MOGA_VERSION,
@@ -162,13 +165,16 @@ enum SystemProperty {
 	SYSPROP_AUDIO_OPTIMAL_SAMPLE_RATE,
 	SYSPROP_AUDIO_OPTIMAL_FRAMES_PER_BUFFER,
 
+	// Exposed on SDL.
+	SYSPROP_AUDIO_DEVICE_LIST,
+
 	SYSPROP_SUPPORTS_PERMISSIONS,
 	SYSPROP_SUPPORTS_SUSTAINED_PERF_MODE,
 };
 
 std::string System_GetProperty(SystemProperty prop);
 int System_GetPropertyInt(SystemProperty prop);
+float System_GetPropertyFloat(SystemProperty prop);
 bool System_GetPropertyBool(SystemProperty prop);
 
-void PushNewGpsData(float latitude, float longitude, float altitude, float speed, float bearing, long long time);
-void PushCameraImage(long long length, unsigned char* image);
+std::vector<std::string> __cameraGetDeviceList();

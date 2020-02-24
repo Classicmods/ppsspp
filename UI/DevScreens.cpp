@@ -17,6 +17,7 @@
 
 #include <algorithm>
 
+#include "base/display.h"
 #include "gfx_es2/gpu_features.h"
 #include "i18n/i18n.h"
 #include "ui/ui_context.h"
@@ -36,16 +37,22 @@
 #include "Core/MIPS/MIPSTables.h"
 #include "Core/MIPS/JitCommon/JitBlockCache.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/MIPS/JitCommon/JitState.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
 #include "UI/MiscScreens.h"
 #include "UI/DevScreens.h"
+#include "UI/ControlMappingScreen.h"
 #include "UI/GameSettingsScreen.h"
 
 #ifdef _WIN32
 #include "Common/CommonWindows.h"
 // Want to avoid including the full header here as it includes d3dx.h
+#if PPSSPP_API(D3DX9)
 int GetD3DXVersion();
+#elif PPSSPP_API(D3D9_D3DCOMPILER)
+int GetD3DCompilerVersion();
+#endif
 #endif
 
 static const char *logLevelList[] = {
@@ -59,8 +66,8 @@ static const char *logLevelList[] = {
 
 void DevMenu::CreatePopupContents(UI::ViewGroup *parent) {
 	using namespace UI;
-	I18NCategory *dev = GetI18NCategory("Developer");
-	I18NCategory *sy = GetI18NCategory("System");
+	auto dev = GetI18NCategory("Developer");
+	auto sy = GetI18NCategory("System");
 
 	ScrollView *scroll = new ScrollView(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT, 1.0f));
 	LinearLayout *items = new LinearLayout(ORIENT_VERTICAL);
@@ -72,13 +79,17 @@ void DevMenu::CreatePopupContents(UI::ViewGroup *parent) {
 	items->Add(new Choice(sy->T("Developer Tools")))->OnClick.Handle(this, &DevMenu::OnDeveloperTools);
 	items->Add(new Choice(dev->T("Jit Compare")))->OnClick.Handle(this, &DevMenu::OnJitCompare);
 	items->Add(new Choice(dev->T("Shader Viewer")))->OnClick.Handle(this, &DevMenu::OnShaderView);
-	items->Add(new CheckBox(&g_Config.bShowAllocatorDebug, dev->T("Allocator Viewer")));
+	if (g_Config.iGPUBackend == (int)GPUBackend::VULKAN) {
+		items->Add(new CheckBox(&g_Config.bShowAllocatorDebug, dev->T("Allocator Viewer")));
+		items->Add(new CheckBox(&g_Config.bShowGpuProfile, dev->T("GPU Profile")));
+	}
 	items->Add(new Choice(dev->T("Toggle Freeze")))->OnClick.Handle(this, &DevMenu::OnFreezeFrame);
 	items->Add(new Choice(dev->T("Dump Frame GPU Commands")))->OnClick.Handle(this, &DevMenu::OnDumpFrame);
 	items->Add(new Choice(dev->T("Toggle Audio Debug")))->OnClick.Handle(this, &DevMenu::OnToggleAudioDebug);
 #ifdef USE_PROFILER
 	items->Add(new CheckBox(&g_Config.bShowFrameProfiler, dev->T("Frame Profiler"), ""));
 #endif
+	items->Add(new CheckBox(&g_Config.bDrawFrameGraph, dev->T("Draw Frametimes Graph")));
 
 	scroll->Add(items);
 	parent->Add(scroll);
@@ -125,8 +136,6 @@ UI::EventReturn DevMenu::OnShaderView(UI::EventParams &e) {
 		screenManager()->push(new ShaderListScreen());
 	return UI::EVENT_DONE;
 }
-
-
 
 UI::EventReturn DevMenu::OnFreezeFrame(UI::EventParams &e) {
 	if (PSP_CoreParameter().frozen) {
@@ -181,7 +190,7 @@ void LogScreen::update() {
 
 void LogScreen::CreateViews() {
 	using namespace UI;
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory("Dialog");
 
 	LinearLayout *outer = new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT));
 	root_ = outer;
@@ -215,8 +224,8 @@ UI::EventReturn LogScreen::OnSubmit(UI::EventParams &e) {
 void LogConfigScreen::CreateViews() {
 	using namespace UI;
 
-	I18NCategory *di = GetI18NCategory("Dialog");
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto di = GetI18NCategory("Dialog");
+	auto dev = GetI18NCategory("Developer");
 
 	root_ = new ScrollView(ORIENT_VERTICAL);
 
@@ -286,7 +295,7 @@ UI::EventReturn LogConfigScreen::OnLogLevelChange(UI::EventParams &e) {
 }
 
 UI::EventReturn LogConfigScreen::OnLogLevel(UI::EventParams &e) {
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto dev = GetI18NCategory("Developer");
 
 	auto logLevelScreen = new LogLevelScreen(dev->T("Log Level"));
 	logLevelScreen->OnChoice.Handle(this, &LogConfigScreen::OnLogLevelChange);
@@ -319,6 +328,75 @@ void LogLevelScreen::OnCompleted(DialogResult result) {
 	}
 }
 
+struct JitDisableFlag {
+	MIPSComp::JitDisable flag;
+	const char *name;
+};
+
+// Please do not try to translate these :)
+static const JitDisableFlag jitDisableFlags[] = {
+	{ MIPSComp::JitDisable::ALU, "ALU" },
+	{ MIPSComp::JitDisable::ALU_IMM, "ALU_IMM" },
+	{ MIPSComp::JitDisable::ALU_BIT, "ALU_BIT" },
+	{ MIPSComp::JitDisable::MULDIV, "MULDIV" },
+	{ MIPSComp::JitDisable::FPU, "FPU" },
+	{ MIPSComp::JitDisable::FPU_COMP, "FPU_COMP" },
+	{ MIPSComp::JitDisable::FPU_XFER, "FPU_XFER" },
+	{ MIPSComp::JitDisable::VFPU_VEC, "VFPU_VEC" },
+	{ MIPSComp::JitDisable::VFPU_MTX_VTFM, "VFPU_MTX_VTFM" },
+	{ MIPSComp::JitDisable::VFPU_MTX_VMSCL, "VFPU_MTX_VMSCL" },
+	{ MIPSComp::JitDisable::VFPU_MTX_VMMUL, "VFPU_MTX_VMMUL" },
+	{ MIPSComp::JitDisable::VFPU_MTX_VMMOV, "VFPU_MTX_VMMOV" },
+	{ MIPSComp::JitDisable::VFPU_COMP, "VFPU_COMP" },
+	{ MIPSComp::JitDisable::VFPU_XFER, "VFPU_XFER" },
+	{ MIPSComp::JitDisable::LSU, "LSU" },
+	{ MIPSComp::JitDisable::LSU_UNALIGNED, "LSU_UNALIGNED" },
+	{ MIPSComp::JitDisable::LSU_FPU, "LSU_FPU" },
+	{ MIPSComp::JitDisable::LSU_VFPU, "LSU_VFPU" },
+	{ MIPSComp::JitDisable::SIMD, "SIMD" },
+	{ MIPSComp::JitDisable::BLOCKLINK, "Block Linking" },
+	{ MIPSComp::JitDisable::POINTERIFY, "Pointerify" },
+	{ MIPSComp::JitDisable::STATIC_ALLOC, "Static regalloc" },
+	{ MIPSComp::JitDisable::CACHE_POINTERS, "Cached pointers" },
+	{ MIPSComp::JitDisable::REGALLOC_GPR, "GPR Regalloc across instructions" },
+	{ MIPSComp::JitDisable::REGALLOC_FPR, "FPR Regalloc across instructions" },
+};
+
+void JitDebugScreen::CreateViews() {
+	using namespace UI;
+
+	auto di = GetI18NCategory("Dialog");
+	auto dev = GetI18NCategory("Developer");
+
+	root_ = new ScrollView(ORIENT_VERTICAL);
+
+	LinearLayout *vert = root_->Add(new LinearLayout(ORIENT_VERTICAL, new LinearLayoutParams(FILL_PARENT, WRAP_CONTENT)));
+	vert->SetSpacing(0);
+
+	LinearLayout *topbar = new LinearLayout(ORIENT_HORIZONTAL);
+	topbar->Add(new Choice(di->T("Back")))->OnClick.Handle<UIScreen>(this, &UIScreen::OnBack);
+	topbar->Add(new Choice(di->T("Disable All")))->OnClick.Handle(this, &JitDebugScreen::OnDisableAll);
+	topbar->Add(new Choice(di->T("Enable All")))->OnClick.Handle(this, &JitDebugScreen::OnEnableAll);
+
+	vert->Add(topbar);
+	vert->Add(new ItemHeader(dev->T("Disabled JIT functionality")));
+
+	for (auto flag : jitDisableFlags) {
+		// Do not add translation of these.
+		vert->Add(new BitCheckBox(&g_Config.uJitDisableFlags, (uint32_t)flag.flag, flag.name));
+	}
+}
+
+UI::EventReturn JitDebugScreen::OnEnableAll(UI::EventParams &e) {
+	g_Config.uJitDisableFlags &= ~(uint32_t)MIPSComp::JitDisable::ALL_FLAGS;
+	return UI::EVENT_DONE;
+}
+
+UI::EventReturn JitDebugScreen::OnDisableAll(UI::EventParams &e) {
+	g_Config.uJitDisableFlags |= (uint32_t)MIPSComp::JitDisable::ALL_FLAGS;
+	return UI::EVENT_DONE;
+}
+
 const char *GetCompilerABI() {
 #if PPSSPP_ARCH(ARMV7)
 	return "armeabi-v7a";
@@ -340,9 +418,9 @@ void SystemInfoScreen::CreateViews() {
 	using namespace UI;
 
 	// NOTE: Do not translate this section. It will change a lot and will be impossible to keep up.
-	I18NCategory *di = GetI18NCategory("Dialog");
-	I18NCategory *si = GetI18NCategory("SysInfo");
-	I18NCategory *gr = GetI18NCategory("Graphics");
+	auto di = GetI18NCategory("Dialog");
+	auto si = GetI18NCategory("SysInfo");
+	auto gr = GetI18NCategory("Graphics");
 	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 
 	ViewGroup *leftColumn = new AnchorLayout(new LinearLayoutParams(1.0f));
@@ -363,6 +441,9 @@ void SystemInfoScreen::CreateViews() {
 
 	deviceSpecs->Add(new ItemHeader(si->T("System Information")));
 	deviceSpecs->Add(new InfoItem(si->T("System Name", "Name"), System_GetProperty(SYSPROP_NAME)));
+#if PPSSPP_PLATFORM(ANDROID)
+	deviceSpecs->Add(new InfoItem(si->T("System Version"), StringFromInt(System_GetPropertyInt(SYSPROP_SYSTEMVERSION))));
+#endif
 	deviceSpecs->Add(new InfoItem(si->T("Lang/Region"), System_GetProperty(SYSPROP_LANGREGION)));
 	std::string board = System_GetProperty(SYSPROP_BOARDNAME);
 	if (!board.empty())
@@ -387,7 +468,8 @@ void SystemInfoScreen::CreateViews() {
 
 	DrawContext *draw = screenManager()->getDrawContext();
 
-	const char *apiName = gr->T(screenManager()->getDrawContext()->GetInfoString(InfoField::APINAME));
+	const std::string apiNameKey = draw->GetInfoString(InfoField::APINAME);
+	const char *apiName = gr->T(apiNameKey);
 	deviceSpecs->Add(new InfoItem(si->T("3D API"), apiName));
 	deviceSpecs->Add(new InfoItem(si->T("Vendor"), draw->GetInfoString(InfoField::VENDORSTRING)));
 	std::string vendor = draw->GetInfoString(InfoField::VENDOR);
@@ -399,7 +481,11 @@ void SystemInfoScreen::CreateViews() {
 		deviceSpecs->Add(new InfoItem(si->T("Driver Version"), System_GetProperty(SYSPROP_GPUDRIVER_VERSION)));
 #if !PPSSPP_PLATFORM(UWP)
 	if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
+#if PPSSPP_API(D3DX9)
 		deviceSpecs->Add(new InfoItem(si->T("D3DX Version"), StringFromFormat("%d", GetD3DXVersion())));
+#elif PPSSPP_API(D3D9_D3DCOMPILER)
+		deviceSpecs->Add(new InfoItem(si->T("D3DCompiler Version"), StringFromFormat("%d", GetD3DCompilerVersion())));
+#endif
 	}
 #endif
 #endif
@@ -437,9 +523,22 @@ void SystemInfoScreen::CreateViews() {
 	deviceSpecs->Add(new InfoItem(si->T("Native Resolution"), StringFromFormat("%dx%d",
 		System_GetPropertyInt(SYSPROP_DISPLAY_XRES),
 		System_GetPropertyInt(SYSPROP_DISPLAY_YRES))));
-	deviceSpecs->Add(new InfoItem(si->T("Refresh rate"), StringFromFormat("%0.3f Hz", (float)System_GetPropertyInt(SYSPROP_DISPLAY_REFRESH_RATE) / 1000.0f)));
 #endif
 
+#if !PPSSPP_PLATFORM(WINDOWS)
+	// Don't show on Windows, since it's always treated as 60 there.
+	deviceSpecs->Add(new InfoItem(si->T("Refresh rate"), StringFromFormat("%0.3f Hz", (float)System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE))));
+#endif
+
+#if 0
+	// For debugging, DO NOT translate
+	deviceSpecs->Add(new InfoItem("Resolution1",
+		StringFromFormat("dp: %dx%d px: %dx%d dpi_s: %0.1fx%0.1f",
+			dp_xres, dp_yres, pixel_xres, pixel_yres, g_dpi_scale_x, g_dpi_scale_y)));
+	deviceSpecs->Add(new InfoItem("Resolution2",
+		StringFromFormat("dpi_s_r: %0.1fx%0.1f px_in_dp: %0.1fx%0.1f",
+			g_dpi_scale_real_x, g_dpi_scale_real_y, pixel_in_dps_x, pixel_in_dps_y)));
+#endif
 
 	deviceSpecs->Add(new ItemHeader(si->T("Version Information")));
 	std::string apiVersion;
@@ -580,7 +679,7 @@ void SystemInfoScreen::CreateViews() {
 void AddressPromptScreen::CreatePopupContents(UI::ViewGroup *parent) {
 	using namespace UI;
 
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto dev = GetI18NCategory("Developer");
 
 	addrView_ = new TextView(dev->T("Enter address"), ALIGN_HCENTER, false);
 	parent->Add(addrView_);
@@ -634,7 +733,7 @@ void AddressPromptScreen::BackspaceDigit() {
 }
 
 void AddressPromptScreen::UpdatePreviewDigits() {
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto dev = GetI18NCategory("Developer");
 
 	if (addr_ != 0) {
 		char temp[32];
@@ -667,8 +766,8 @@ bool AddressPromptScreen::key(const KeyInput &key) {
 
 // Three panes: Block chooser, MIPS view, ARM/x86 view
 void JitCompareScreen::CreateViews() {
-	I18NCategory *di = GetI18NCategory("Dialog");
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto di = GetI18NCategory("Dialog");
+	auto dev = GetI18NCategory("Developer");
 
 	using namespace UI;
 	
@@ -713,7 +812,7 @@ void JitCompareScreen::UpdateDisasm() {
 
 	using namespace UI;
 
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto dev = GetI18NCategory("Developer");
 
 	JitBlockCacheDebugInterface *blockCacheDebug = MIPSComp::jit->GetBlockCacheDebugInterface();
 
@@ -804,7 +903,7 @@ UI::EventReturn JitCompareScreen::OnShowStats(UI::EventParams &e) {
 
 
 UI::EventReturn JitCompareScreen::OnSelectBlock(UI::EventParams &e) {
-	I18NCategory *dev = GetI18NCategory("Developer");
+	auto dev = GetI18NCategory("Developer");
 
 	auto addressPrompt = new AddressPromptScreen(dev->T("Block address"));
 	addressPrompt->OnChoice.Handle(this, &JitCompareScreen::OnBlockAddress);
@@ -948,7 +1047,7 @@ struct { DebugShaderType type; const char *name; } shaderTypes[] = {
 void ShaderListScreen::CreateViews() {
 	using namespace UI;
 
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory("Dialog");
 
 	LinearLayout *layout = new LinearLayout(ORIENT_VERTICAL);
 	root_ = layout;
@@ -977,7 +1076,7 @@ UI::EventReturn ShaderListScreen::OnShaderClick(UI::EventParams &e) {
 void ShaderViewScreen::CreateViews() {
 	using namespace UI;
 
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory("Dialog");
 
 	LinearLayout *layout = new LinearLayout(ORIENT_VERTICAL);
 	root_ = layout;

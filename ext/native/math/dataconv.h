@@ -10,7 +10,11 @@
 #include <emmintrin.h>
 #endif
 #if PPSSPP_PLATFORM(ARM_NEON)
+#if defined(_MSC_VER) && PPSSPP_ARCH(ARM64)
+#include <arm64_neon.h>
+#else
 #include <arm_neon.h>
+#endif
 #endif
 
 extern const float one_over_255_x4[4];
@@ -40,6 +44,21 @@ inline void Uint8x4ToFloat4(float f[4], uint32_t u) {
 	f[2] = ((u >> 16) & 0xFF) * (1.0f / 255.0f);
 	f[3] = ((u >> 24) & 0xFF) * (1.0f / 255.0f);
 #endif
+}
+
+// Could be SSE optimized.
+inline uint32_t Float4ToUint8x4(const float f[4]) {
+	int i4[4];
+	for (int i = 0; i < 4; i++) {
+		if (f[i] > 1.0f) {
+			i4[i] = 255;
+		} else if (f[i] < 0.0f) {
+			i4[i] = 0;
+		} else {
+			i4[i] = (int)(f[i] * 255.0f);
+		}
+	}
+	return i4[0] | (i4[1] << 8) | (i4[2] << 16) | (i4[3] << 24);
 }
 
 inline void Uint8x3ToFloat4_AlphaUint8(float f[4], uint32_t u, uint8_t alpha) {

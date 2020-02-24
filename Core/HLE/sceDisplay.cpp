@@ -153,6 +153,12 @@ static double fpsHistory[120];
 static int fpsHistorySize = (int)ARRAY_SIZE(fpsHistory);
 static int fpsHistoryPos = 0;
 static int fpsHistoryValid = 0;
+static double frameTimeHistory[600];
+static double frameSleepHistory[600];
+static const int frameTimeHistorySize = (int)ARRAY_SIZE(frameTimeHistory);
+static int frameTimeHistoryPos = 0;
+static int frameTimeHistoryValid = 0;
+static double lastFrameTimeHistory = 0.0;
 static double monitorFpsUntil = 0.0;
 static int lastNumFlips = 0;
 static float flips = 0.0f;
@@ -180,6 +186,11 @@ void __DisplayFlip(int cyclesLate);
 static void ScheduleLagSync(int over = 0) {
 	lagSyncScheduled = g_Config.bForceLagSync;
 	if (lagSyncScheduled) {
+		// Reset over if it became too high, such as after pausing or initial loading.
+		// There's no real sense in it being more than 1/60th of a second.
+		if (over > 1000000 / 60) {
+			over = 0;
+		}
 		CoreTiming::ScheduleEvent(usToCycles(1000 + over), lagSyncEvent, 0);
 		lastLagSync = real_time_now();
 	}
@@ -230,6 +241,9 @@ void __DisplayInit() {
 	lastNumFlips = 0;
 	fpsHistoryValid = 0;
 	fpsHistoryPos = 0;
+	frameTimeHistoryValid = 0;
+	frameTimeHistoryPos = 0;
+	lastFrameTimeHistory = 0.0;
 
 	__KernelRegisterWaitTypeFuncs(WAITTYPE_VBLANK, __DisplayVblankBeginCallback, __DisplayVblankEndCallback);
 }
@@ -430,8 +444,7 @@ static bool IsRunningSlow() {
 			best = std::max(fpsHistory[index], best);
 		}
 
-		// Note that SYSPROP_DISPLAY_REFRESH_RATE is multiplied by 1000.
-		return best < System_GetPropertyInt(SYSPROP_DISPLAY_REFRESH_RATE) * (1.0 / 1001.0);
+		return best < System_GetPropertyFloat(SYSPROP_DISPLAY_REFRESH_RATE) * 0.999;
 	}
 
 	return false;
@@ -459,6 +472,23 @@ static void CalculateFPS() {
 			++fpsHistoryValid;
 		}
 	}
+
+	if (g_Config.bDrawFrameGraph) {
+		frameTimeHistory[frameTimeHistoryPos++] = now - lastFrameTimeHistory;
+		lastFrameTimeHistory = now;
+		frameTimeHistoryPos = frameTimeHistoryPos % frameTimeHistorySize;
+		if (frameTimeHistoryValid < frameTimeHistorySize) {
+			++frameTimeHistoryValid;
+		}
+		frameSleepHistory[frameTimeHistoryPos] = 0.0;
+	}
+}
+
+double *__DisplayGetFrameTimes(int *out_valid, int *out_pos, double **out_sleep) {
+	*out_valid = frameTimeHistoryValid;
+	*out_pos = frameTimeHistoryPos;
+	*out_sleep = frameSleepHistory;
+	return frameTimeHistory;
 }
 
 void __DisplayGetDebugStats(char *stats, size_t bufsize) {
@@ -501,6 +531,18 @@ static void DoFrameDropLogging(float scaledTimestep) {
 		__DisplayGetDebugStats(stats, sizeof(stats));
 		NOTICE_LOG(SCEDISPLAY, "Dropping frames - budget = %.2fms / %.1ffps, actual = %.2fms (+%.2fms) / %.1ffps\n%s", scaledTimestep * 1000.0, 1.0 / scaledTimestep, actualTimestep * 1000.0, (actualTimestep - scaledTimestep) * 1000.0, 1.0 / actualTimestep, stats);
 	}
+}
+
+static int CalculateFrameSkip() {
+	int frameSkipNum;
+	if (g_Config.iFrameSkipType == 1) {
+		// Calculate the frames to skip dynamically using the set percentage of the current fps
+		frameSkipNum = ceil( flips * (static_cast<double>(g_Config.iFrameSkip) / 100.00) );
+	} else {
+		// Use the set number of frames to skip
+		frameSkipNum = g_Config.iFrameSkip;
+	}
+	return frameSkipNum;
 }
 
 // Let's collect all the throttling and frameskipping logic here.
@@ -553,15 +595,16 @@ static void DoFrameTiming(bool &throttle, bool &skipFrame, float timestep) {
 	// Auto-frameskip automatically if speed limit is set differently than the default.
 	bool useAutoFrameskip = g_Config.bAutoFrameSkip && g_Config.iRenderingMode != FB_NON_BUFFERED_MODE;
 	bool forceFrameskip = (fpsLimiter == FPSLimit::CUSTOM1 && g_Config.iFpsLimit1 > 60) || (fpsLimiter == FPSLimit::CUSTOM2 && g_Config.iFpsLimit2 > 60);
+	int frameSkipNum = CalculateFrameSkip();
 	if (g_Config.bAutoFrameSkip || forceFrameskip) {
 		// autoframeskip
 		// Argh, we are falling behind! Let's skip a frame and see if we catch up.
 		if (curFrameTime > nextFrameTime && doFrameSkip) {
 			skipFrame = true;
 		}
-	} else if (g_Config.iFrameSkip >= 1) {
+	} else if (frameSkipNum >= 1) {
 		// fixed frameskip
-		if (numSkippedFrames >= g_Config.iFrameSkip)
+		if (numSkippedFrames >= frameSkipNum)
 			skipFrame = false;
 		else
 			skipFrame = true;
@@ -598,7 +641,8 @@ static void DoFrameIdleTiming() {
 
 	time_update();
 
-	double dist = time_now_d() - lastFrameTime;
+	double before = time_now_d();
+	double dist = before - lastFrameTime;
 	// Ignore if the distance is just crazy.  May mean wrap or pause.
 	if (dist < 0.0 || dist >= 15 * timePerVblank) {
 		return;
@@ -616,7 +660,7 @@ static void DoFrameIdleTiming() {
 	// This prevents fast forward during loading screens.
 	// Give a little extra wiggle room in case the next vblank does more work.
 	const double goal = lastFrameTime + (numVBlanksSinceFlip - 1) * scaledVblank - 0.001;
-	if (numVBlanksSinceFlip >= 2 && time_now_d() < goal) {
+	if (numVBlanksSinceFlip >= 2 && before < goal) {
 		while (time_now_d() < goal) {
 #ifdef _WIN32
 			sleep_ms(1);
@@ -625,6 +669,10 @@ static void DoFrameIdleTiming() {
 			usleep((long)(left * 1000000));
 #endif
 			time_update();
+		}
+
+		if (g_Config.bDrawFrameGraph) {
+			frameSleepHistory[frameTimeHistoryPos] += time_now_d() - before;
 		}
 	}
 }
@@ -696,6 +744,7 @@ void __DisplayFlip(int cyclesLate) {
 		postEffectRequiresFlip = shaderInfo->requires60fps;
 	const bool fbDirty = gpu->FramebufferDirty();
 	if (fbDirty || noRecentFlip || postEffectRequiresFlip) {
+		int frameSleepPos = frameTimeHistoryPos;
 		CalculateFPS();
 
 		// Let the user know if we're running slow, so they know to adjust settings.
@@ -703,7 +752,7 @@ void __DisplayFlip(int cyclesLate) {
 		static bool hasNotifiedSlow = false;
 		if (!g_Config.bHideSlowWarnings && !hasNotifiedSlow && PSP_CoreParameter().fpsLimit == FPSLimit::NORMAL && IsRunningSlow()) {
 #ifndef _DEBUG
-			I18NCategory *err = GetI18NCategory("Error");
+			auto err = GetI18NCategory("Error");
 			if (g_Config.bSoftwareRendering) {
 				host->NotifyUserMessage(err->T("Running slow: Try turning off Software Rendering"), 6.0f, 0xFF30D0D0);
 			} else {
@@ -734,9 +783,10 @@ void __DisplayFlip(int cyclesLate) {
 		DoFrameTiming(throttle, skipFrame, (float)numVBlanksSinceFlip * timePerVblank);
 
 		int maxFrameskip = 8;
+		int frameSkipNum = CalculateFrameSkip();
 		if (throttle) {
 			// 4 here means 1 drawn, 4 skipped - so 12 fps minimum.
-			maxFrameskip = g_Config.iFrameSkip;
+			maxFrameskip = frameSkipNum;
 		}
 		if (numSkippedFrames >= maxFrameskip || GPURecord::IsActivePending()) {
 			skipFrame = false;
@@ -756,6 +806,11 @@ void __DisplayFlip(int cyclesLate) {
 
 		CoreTiming::ScheduleEvent(0 - cyclesLate, afterFlipEvent, 0);
 		numVBlanksSinceFlip = 0;
+
+		if (g_Config.bDrawFrameGraph) {
+			// Track how long we sleep (whether vsync or sleep_ms.)
+			frameSleepHistory[frameSleepPos] += real_time_now() - lastFrameTimeHistory;
+		}
 	} else {
 		// Okay, there's no new frame to draw.  But audio may be playing, so we need to time still.
 		DoFrameIdleTiming();
@@ -802,6 +857,7 @@ void hleLagSync(u64 userdata, int cyclesLate) {
 
 	const double goal = lastLagSync + (scale / 1000.0f);
 	time_update();
+	double before = time_now_d();
 	// Don't lag too long ever, if they leave it paused.
 	while (time_now_d() < goal && goal < time_now_d() + 0.01) {
 #ifndef _WIN32
@@ -814,6 +870,10 @@ void hleLagSync(u64 userdata, int cyclesLate) {
 	const int emuOver = (int)cyclesToUs(cyclesLate);
 	const int over = (int)((time_now_d() - goal) * 1000000);
 	ScheduleLagSync(over - emuOver);
+
+	if (g_Config.bDrawFrameGraph) {
+		frameSleepHistory[frameTimeHistoryPos] += time_now_d() - before;
+	}
 }
 
 static u32 sceDisplayIsVblank() {
@@ -914,7 +974,7 @@ u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 
 	s64 delayCycles = 0;
 	// Don't count transitions between display off and display on.
-	if (topaddr != 0 && topaddr != framebuf.topaddr && framebuf.topaddr != 0 && g_Config.iForceMaxEmulatedFPS > 0) {
+	if (topaddr != 0 && topaddr != framebuf.topaddr && framebuf.topaddr != 0 && PSP_CoreParameter().compat.flags().ForceMax60FPS) {
 		// sceDisplaySetFramebuf() isn't supposed to delay threads at all.  This is a hack.
 		// So let's only delay when it's more than 1ms.
 		const s64 FLIP_DELAY_CYCLES_MIN = usToCycles(1000);
@@ -928,7 +988,7 @@ u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 		u64 now = CoreTiming::GetTicks();
 		s64 cyclesAhead = nextFlipCycles - now;
 		if (cyclesAhead > FLIP_DELAY_CYCLES_MIN) {
-			if (lastFlipsTooFrequent >= FLIP_DELAY_MIN_FLIPS && gpuStats.numClears > 0) {
+			if (lastFlipsTooFrequent >= FLIP_DELAY_MIN_FLIPS) {
 				delayCycles = cyclesAhead;
 			} else {
 				++lastFlipsTooFrequent;
@@ -938,7 +998,7 @@ u32 sceDisplaySetFramebuf(u32 topaddr, int linesize, int pixelformat, int sync) 
 		}
 
 		// 1001 to account for NTSC timing (59.94 fps.)
-		u64 expected = msToCycles(1001) / g_Config.iForceMaxEmulatedFPS - LEEWAY_CYCLES_PER_FLIP;
+		u64 expected = msToCycles(1001) / 60 - LEEWAY_CYCLES_PER_FLIP;
 		lastFlipCycles = now;
 		nextFlipCycles = std::max(lastFlipCycles, nextFlipCycles) + expected;
 	}
@@ -1050,10 +1110,10 @@ static u32 sceDisplayGetVcount() {
 }
 
 static u32 __DisplayGetCurrentHcount() {
-	const static int ticksPerVblank333 = 333 * 1000000 / 60 / hCountPerVblank;
 	const int ticksIntoFrame = CoreTiming::GetTicks() - frameStartTicks;
+	const int ticksPerVblank = CoreTiming::GetClockFrequencyHz() / 60 / hCountPerVblank;
 	// Can't seem to produce a 0 on real hardware, offsetting by 1 makes things look right.
-	return 1 + (ticksIntoFrame / (CoreTiming::GetClockFrequencyMHz() * ticksPerVblank333 / 333));
+	return 1 + (ticksIntoFrame / ticksPerVblank);
 }
 
 static u32 __DisplayGetAccumulatedHcount() {

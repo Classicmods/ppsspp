@@ -24,10 +24,12 @@ MainWindow::MainWindow(QWidget *parent, bool fullscreen) :
 {
 	QDesktopWidget *desktop = QApplication::desktop();
 	int screenNum = QProcessEnvironment::systemEnvironment().value("SDL_VIDEO_FULLSCREEN_HEAD", "0").toInt();
-	
-	// Move window to top left coordinate of selected screen
+
+	// Move window to the center of selected screen
 	QRect rect = desktop->screenGeometry(screenNum);
-	move(rect.topLeft());
+	move((rect.width()-frameGeometry().width()) / 4, (rect.height()-frameGeometry().height()) / 4);
+
+	setWindowIcon(QIcon(qApp->applicationDirPath() + "/assets/icon_regular_72.png"));
 
 	SetGameTitle("");
 	emugl = new MainUI(this);
@@ -293,19 +295,22 @@ void MainWindow::consoleAct()
 void MainWindow::raiseTopMost()
 {
 	setWindowState( (windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
-	raise();  
+	raise();
 	activateWindow();
 }
 
 void MainWindow::SetFullScreen(bool fullscreen) {
 	if (fullscreen) {
+#if !PPSSPP_PLATFORM(MAC)
 		menuBar()->hide();
-		
+
 		emugl->setFixedSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+		// TODO: Shouldn't this be physicalSize()?
 		emugl->resizeGL(emugl->size().width(), emugl->size().height());
 		// TODO: Won't showFullScreen do this for us?
 		setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
 		setFixedSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+#endif
 
 		showFullScreen();
 		InitPadLayout(dp_xres, dp_yres);
@@ -313,8 +318,10 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 		if (GetUIState() == UISTATE_INGAME && !g_Config.bShowTouchControls)
 			QApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
 	} else {
+#if !PPSSPP_PLATFORM(MAC)
 		menuBar()->show();
 		updateMenus();
+#endif
 
 		showNormal();
 		SetWindowScale(-1);
@@ -344,7 +351,7 @@ void MainWindow::forumAct()
 	QDesktopServices::openUrl(QUrl("https://forums.ppsspp.org/"));
 }
 
-void MainWindow::gitAct() 
+void MainWindow::gitAct()
 {
 	QDesktopServices::openUrl(QUrl("https://github.com/hrydgard/ppsspp/"));
 }
@@ -392,9 +399,14 @@ void MainWindow::SetWindowScale(int zoom) {
 	g_Config.iWindowWidth = width;
 	g_Config.iWindowHeight = height;
 
+#if !PPSSPP_PLATFORM(MAC)
 	emugl->setFixedSize(g_Config.iWindowWidth, g_Config.iWindowHeight);
+	// TODO: Shouldn't this be scaled size?
 	emugl->resizeGL(g_Config.iWindowWidth, g_Config.iWindowHeight);
 	setFixedSize(sizeHint());
+#else
+	resize(g_Config.iWindowWidth, g_Config.iWindowHeight);
+#endif
 }
 
 void MainWindow::SetGameTitle(QString text)
@@ -488,17 +500,18 @@ void MainWindow::createMenus()
 	anisotropicGroup = new MenuActionGroup(this, anisotropicMenu, SLOT(anisotropicGroup_triggered(QAction *)),
 		QStringList() << "Off" << "2x" << "4x" << "8x" << "16x",
 		QList<int>()  << 0     << 1    << 2    << 3    << 4);
-	videoMenu->add(new MenuAction(this, SLOT(bufferRenderAct()),  QT_TR_NOOP("&Buffered Rendering"), Qt::Key_F5))
+	videoMenu->add(new MenuAction(this, SLOT(bufferRenderAct()),  QT_TR_NOOP("&Buffered Rendering")))
 		->addEventChecked(&g_Config.iRenderingMode);
 	videoMenu->add(new MenuAction(this, SLOT(linearAct()),        QT_TR_NOOP("&Linear Filtering")))
 		->addEventChecked(&g_Config.iTexFiltering);
 	videoMenu->addSeparator();
 	// - Screen Size
-	MenuTree* screenMenu = new MenuTree(this, videoMenu,          QT_TR_NOOP("&Screen Size"));
+	MenuTree* screenMenu = new MenuTree(this, videoMenu, QT_TR_NOOP("&Screen Size"));
 	screenGroup = new MenuActionGroup(this, screenMenu, SLOT(screenGroup_triggered(QAction *)),
 		QStringList() << "1x" << "2x" << "3x" << "4x" << "5x" << "6x" << "7x" << "8x" << "9x" << "10x",
-		QList<int>()  << 1    << 2    << 3    << 4    << 5    << 6    << 7    << 8    << 9    << 10,
-		QList<int>() << Qt::CTRL + Qt::Key_1 << Qt::CTRL + Qt::Key_2 << Qt::CTRL + Qt::Key_3 << Qt::CTRL + Qt::Key_4);
+		QList<int>() << 1 << 2 << 3 << 4 << 5 << 6 << 7 << 8 << 9 << 10,
+		QList<int>() << Qt::CTRL + Qt::Key_1 << Qt::CTRL + Qt::Key_2 << Qt::CTRL + Qt::Key_3 << Qt::CTRL + Qt::Key_4 << Qt::CTRL + Qt::Key_5
+		<< Qt::CTRL + Qt::Key_6 << Qt::CTRL + Qt::Key_7 << Qt::CTRL + Qt::Key_8 << Qt::CTRL + Qt::Key_9 << Qt::CTRL + Qt::Key_0);
 
 	MenuTree* displayLayoutMenu = new MenuTree(this, videoMenu, QT_TR_NOOP("&Display Layout Options"));
 	displayLayoutGroup = new MenuActionGroup(this, displayLayoutMenu, SLOT(displayLayoutGroup_triggered(QAction *)),
@@ -511,6 +524,8 @@ void MainWindow::createMenus()
 		->addEventChecked(&g_Config.bVertexCache);
 	videoMenu->add(new MenuAction(this, SLOT(frameskipAct()),     QT_TR_NOOP("&Frameskip")))
 		->addEventChecked(&g_Config.iFrameSkip);
+	videoMenu->add(new MenuAction(this, SLOT(frameskipTypeAct()),     QT_TR_NOOP("&FrameSkipType")))
+		->addEventChecked(&g_Config.iFrameSkipType);
 	optionsMenu->add(new MenuAction(this, SLOT(audioAct()),   QT_TR_NOOP("&Audio")))
 		->addEventChecked(&g_Config.bEnableSound);
 	optionsMenu->addSeparator();
@@ -580,7 +595,7 @@ void MainWindow::createMenus()
 		}
 	}
 	langMenu->addActions(langGroup->actions());
-	
+
 	// Help
 	MenuTree* helpMenu = new MenuTree(this, menuBar(),    QT_TR_NOOP("&Help"));
 	helpMenu->add(new MenuAction(this, SLOT(websiteAct()),    QT_TR_NOOP("Official &website"), QKeySequence::HelpContents));

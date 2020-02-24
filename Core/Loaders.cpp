@@ -258,6 +258,7 @@ bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
 				}
 				else if (ebootType == IdentifiedFileType::PSP_PS1_PBP) {
 					*error_string = "PS1 EBOOTs are not supported by PPSSPP.";
+					coreState = CORE_ERROR;
 					return false;
 				}
 				std::string path = fileLoader->Path();
@@ -269,6 +270,7 @@ bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
 				return Load_PSP_ELF_PBP(fileLoader, error_string);
 			} else {
 				*error_string = "No EBOOT.PBP, misidentified game";
+				coreState = CORE_ERROR;
 				return false;
 			}
 		}
@@ -292,7 +294,9 @@ bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
 
 	case IdentifiedFileType::ERROR_IDENTIFYING:
 		ERROR_LOG(LOADER, "Could not read file");
-		*error_string = "Error reading file";
+		*error_string = fileLoader ? fileLoader->LatestError() : "";
+		if (error_string->empty())
+			*error_string = "Error reading file";
 		break;
 
 	case IdentifiedFileType::ARCHIVE_RAR:
@@ -347,5 +351,45 @@ bool LoadFile(FileLoader **fileLoaderPtr, std::string *error_string) {
 		*error_string = "Failed to identify file";
 		break;
 	}
+
+	coreState = CORE_ERROR;
 	return false;
+}
+
+bool UmdReplace(std::string filepath, std::string &error) {
+	IFileSystem* currentUMD = pspFileSystem.GetSystem("disc0:");
+
+	if (!currentUMD) {
+		error = "has no disc";
+		return false;
+	}
+
+	FileLoader *loadedFile = ConstructFileLoader(filepath);
+
+	if (!loadedFile->Exists()) {
+		delete loadedFile;
+		error = loadedFile->Path() + " doesn't exist";
+		return false;
+	}
+	UpdateLoadedFile(loadedFile);
+
+	loadedFile = ResolveFileLoaderTarget(loadedFile);
+	IdentifiedFileType type = Identify_File(loadedFile);
+
+	switch (type) {
+	case IdentifiedFileType::PSP_ISO:
+	case IdentifiedFileType::PSP_ISO_NP:
+	case IdentifiedFileType::PSP_DISC_DIRECTORY:
+		if (!ReInitMemoryForGameISO(loadedFile)) {
+			error = "reinit memory failed";
+			return false;
+		}
+
+		break;
+	default:
+		error = "Unsupported file type:" + std::to_string((int)type);
+		return false;
+		break;
+	}
+	return true;
 }

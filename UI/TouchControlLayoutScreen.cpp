@@ -213,6 +213,34 @@ private:
 	float &spacing_;
 };
 
+class SnapGrid : public UI::View {
+public:
+	SnapGrid(int leftMargin, int rightMargin, int topMargin, int bottomMargin, u32 color) {
+		x1 = leftMargin;
+		x2 = rightMargin;
+		y1 = topMargin;
+		y2 = bottomMargin;
+		col = color;
+	}
+
+	void Draw(UIContext &dc) override {
+		if (g_Config.bTouchSnapToGrid) {
+			dc.Flush();
+			dc.BeginNoTex();
+			for (int x = x1; x < x2; x += g_Config.iTouchSnapGridSize)
+				dc.Draw()->vLine(x, y1, y2, col);
+			for (int y = y1; y < y2; y += g_Config.iTouchSnapGridSize)
+				dc.Draw()->hLine(x1, y, x2, col);
+			dc.Flush();
+			dc.Begin();
+		}
+	}
+
+private:
+	int x1, x2, y1, y2;
+	u32 col;
+};
+
 TouchControlLayoutScreen::TouchControlLayoutScreen() {
 	pickedControl_ = 0;
 };
@@ -243,9 +271,15 @@ bool TouchControlLayoutScreen::touch(const TouchInput &touch) {
 				// if the leftmost point of the control is ahead of the margin,
 				// move it. Otherwise, don't.
 				newX = touch.x;
+				// Snap to grid
+				if (g_Config.bTouchSnapToGrid)
+					newX -= (int)(touch.x - bounds.w) % g_Config.iTouchSnapGridSize;
 			}
 			if (touch.y > minTouchY && touch.y < maxTouchY) {
 				newY = touch.y;
+				// Snap to grid
+				if (g_Config.bTouchSnapToGrid)
+					newY -= (int)(touch.y - bounds.h) % g_Config.iTouchSnapGridSize;
 			}
 			pickedControl_->ReplaceLayoutParams(new UI::AnchorLayoutParams(newX, newY, NONE, NONE, true));
 		} else if (mode == 1) {
@@ -254,6 +288,11 @@ bool TouchControlLayoutScreen::touch(const TouchInput &touch) {
 			float diffX = (touch.x - startX_);
 			float diffY = -(touch.y - startY_);
 
+			// Snap to grid
+			if (g_Config.bTouchSnapToGrid) {
+					diffX -= (int)(touch.x - startX_) % (g_Config.iTouchSnapGridSize/2);
+					diffY += (int)(touch.y - startY_) % (g_Config.iTouchSnapGridSize/2);
+			}
 			float movementScale = 0.02f;
 			float newScale = startScale_ + diffY * movementScale; 
 			float newSpacing = startSpacing_ + diffX * movementScale;
@@ -286,7 +325,7 @@ void TouchControlLayoutScreen::resized() {
 }
 
 void TouchControlLayoutScreen::onFinish(DialogResult reason) {
-	g_Config.Save();
+	g_Config.Save("TouchControlLayoutScreen::onFinish");
 }
 
 UI::EventReturn TouchControlLayoutScreen::OnVisibility(UI::EventParams &e) {
@@ -317,18 +356,22 @@ void TouchControlLayoutScreen::CreateViews() {
 
 	using namespace UI;
 
-	I18NCategory *co = GetI18NCategory("Controls");
-	I18NCategory *di = GetI18NCategory("Dialog");
+	auto co = GetI18NCategory("Controls");
+	auto di = GetI18NCategory("Dialog");
 
 	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 
 	Choice *reset = new Choice(di->T("Reset"), "", false, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 84));
 	Choice *back = new Choice(di->T("Back"), "", false, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 10));
-	Choice *visibility = new Choice(co->T("Visibility"), "", false, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 158));
+	Choice *visibility = new Choice(co->T("Visibility"), "", false, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 298));
 	// controlsSettings->Add(new PopupSliderChoiceFloat(&g_Config.fButtonScale, 0.80, 2.0, co->T("Button Scaling"), screenManager()))
 	// 	->OnChange.Handle(this, &GameSettingsScreen::OnChangeControlScaling);
 
-	mode_ = new ChoiceStrip(ORIENT_VERTICAL, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 158 + 64 + 10));
+	CheckBox *snap = new CheckBox(&g_Config.bTouchSnapToGrid, di->T("Snap"), "", new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 228));
+	PopupSliderChoice *gridSize = new PopupSliderChoice(&g_Config.iTouchSnapGridSize, 2, 256, di->T("Grid"), screenManager(), "", new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 158));
+	gridSize->SetEnabledPtr(&g_Config.bTouchSnapToGrid);
+
+	mode_ = new ChoiceStrip(ORIENT_VERTICAL, new AnchorLayoutParams(leftColumnWidth, WRAP_CONTENT, 10, NONE, NONE, 140 + 158 + 64 + 10));
 	mode_->AddChoice(di->T("Move"));
 	mode_->AddChoice(di->T("Resize"));
 	mode_->SetSelection(0);
@@ -338,6 +381,8 @@ void TouchControlLayoutScreen::CreateViews() {
 	visibility->OnClick.Handle(this, &TouchControlLayoutScreen::OnVisibility);
 	root_->Add(mode_);
 	root_->Add(visibility);
+	root_->Add(snap);
+	root_->Add(gridSize);
 	root_->Add(reset);
 	root_->Add(back);
 
@@ -350,9 +395,9 @@ void TouchControlLayoutScreen::CreateViews() {
 	// serves no other purpose.
 	AnchorLayout *controlsHolder = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 
-	I18NCategory *ms = GetI18NCategory("MainSettings");
+	auto ms = GetI18NCategory("MainSettings");
 
-	tabHolder->AddTab(ms->T("Controls"), controlsHolder);
+	//tabHolder->AddTab(ms->T("Controls"), controlsHolder);
 
 	if (!g_Config.bShowTouchControls) {
 		// Shouldn't even be able to get here as the way into this dialog should be closed.
@@ -408,6 +453,12 @@ void TouchControlLayoutScreen::CreateViews() {
 		controls_.push_back(speed2);
 	}
 
+	if (g_Config.touchRapidFireKey.show) {
+		DragDropButton *rapidFire = new DragDropButton(g_Config.touchRapidFireKey, rectImage, I_ARROW);
+		rapidFire->SetAngle(90.0f, 180.0f);
+		controls_.push_back(rapidFire);
+	}
+
 	if (g_Config.touchLKey.show) {
 		controls_.push_back(new DragDropButton(g_Config.touchLKey, shoulderImage, I_L));
 	}
@@ -420,6 +471,9 @@ void TouchControlLayoutScreen::CreateViews() {
 
 	if (g_Config.touchAnalogStick.show) {
 		controls_.push_back(new DragDropButton(g_Config.touchAnalogStick, stickBg, stickImage));
+	}
+	if (g_Config.touchRightAnalogStick.show) {
+		controls_.push_back(new DragDropButton(g_Config.touchRightAnalogStick, stickBg, stickImage));
 	}
 	if (g_Config.touchCombo0.show) {
 		controls_.push_back(new DragDropButton(g_Config.touchCombo0, roundImage, comboKeyImages[0]));
@@ -440,6 +494,8 @@ void TouchControlLayoutScreen::CreateViews() {
 	for (size_t i = 0; i < controls_.size(); i++) {
 		root_->Add(controls_[i]);
 	}
+
+	root_->Add(new SnapGrid(leftColumnWidth+10, bounds.w, 0, bounds.h, 0x3FFFFFFF));
 }
 
 // return the control which was picked up by the touchEvent. If a control

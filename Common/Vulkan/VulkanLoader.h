@@ -25,6 +25,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#elif defined(__APPLE__)
+#define VK_USE_PLATFORM_METAL_EXT
 #endif
 
 #define VK_NO_PROTOTYPES
@@ -173,6 +175,8 @@ extern PFN_vkCmdExecuteCommands vkCmdExecuteCommands;
 extern PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR;
 #elif defined(_WIN32)
 extern PFN_vkCreateWin32SurfaceKHR vkCreateWin32SurfaceKHR;
+#elif defined(VK_USE_PLATFORM_METAL_EXT)
+extern PFN_vkCreateMetalSurfaceEXT vkCreateMetalSurfaceEXT;
 #endif
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 extern PFN_vkCreateXlibSurfaceKHR vkCreateXlibSurfaceKHR;
@@ -197,15 +201,48 @@ extern PFN_vkQueuePresentKHR vkQueuePresentKHR;
 
 // And the DEBUG_REPORT extension. Since we load this dynamically even in static
 // linked mode, we have to rename it :(
-extern PFN_vkCreateDebugReportCallbackEXT dyn_vkCreateDebugReportCallbackEXT;
-extern PFN_vkDestroyDebugReportCallbackEXT dyn_vkDestroyDebugReportCallbackEXT;
+extern PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallbackEXT;
+extern PFN_vkDestroyDebugReportCallbackEXT vkDestroyDebugReportCallbackEXT;
 
+extern PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT;
+extern PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT;
+extern PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabelEXT;
+extern PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabelEXT;
+extern PFN_vkCmdInsertDebugUtilsLabelEXT vkCmdInsertDebugUtilsLabelEXT;
+extern PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectNameEXT;
+extern PFN_vkSetDebugUtilsObjectTagEXT vkSetDebugUtilsObjectTagEXT;
+
+// Assorted other extensions.
+extern PFN_vkGetBufferMemoryRequirements2KHR vkGetBufferMemoryRequirements2KHR;
+extern PFN_vkGetImageMemoryRequirements2KHR vkGetImageMemoryRequirements2KHR;
+extern PFN_vkGetMemoryHostPointerPropertiesEXT vkGetMemoryHostPointerPropertiesEXT;
+extern PFN_vkGetPhysicalDeviceProperties2KHR vkGetPhysicalDeviceProperties2KHR;
+extern PFN_vkGetPhysicalDeviceFeatures2KHR vkGetPhysicalDeviceFeatures2KHR;
+
+
+// For fast extension-enabled checks.
+struct VulkanDeviceExtensions {
+	bool EXT_debug_report;
+	bool EXT_debug_utils;
+	bool KHR_maintenance1; // required for KHR_create_renderpass2
+	bool KHR_maintenance2;
+	bool KHR_maintenance3;
+	bool KHR_multiview;  // required for KHR_create_renderpass2
+	bool KHR_get_memory_requirements2;
+	bool KHR_dedicated_allocation;
+	bool KHR_create_renderpass2;
+	bool EXT_external_memory_host;
+	bool KHR_get_physical_device_properties2;
+	bool KHR_depth_stencil_resolve;
+	bool EXT_shader_stencil_export;
+	// bool EXT_depth_range_unrestricted;  // Allows depth outside [0.0, 1.0] in 32-bit float depth buffers.
+};
 
 // Way to do a quick check before even attempting to load.
 bool VulkanMayBeAvailable();
 void VulkanSetAvailable(bool available);
 
 bool VulkanLoad();
-void VulkanLoadInstanceFunctions(VkInstance instance);
-void VulkanLoadDeviceFunctions(VkDevice device);
+void VulkanLoadInstanceFunctions(VkInstance instance, const VulkanDeviceExtensions &enabledExtensions);
+void VulkanLoadDeviceFunctions(VkDevice device, const VulkanDeviceExtensions &enabledExtensions);
 void VulkanFree();

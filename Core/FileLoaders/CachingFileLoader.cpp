@@ -25,12 +25,12 @@
 
 // Takes ownership of backend.
 CachingFileLoader::CachingFileLoader(FileLoader *backend)
-	: backend_(backend) {
+	: ProxiedFileLoader(backend) {
 }
 
 void CachingFileLoader::Prepare() {
 	std::call_once(preparedFlag_, [this](){
-		filesize_ = backend_->FileSize();
+		filesize_ = ProxiedFileLoader::FileSize();
 		if (filesize_ > 0) {
 			InitCache();
 		}
@@ -41,27 +41,25 @@ CachingFileLoader::~CachingFileLoader() {
 	if (filesize_ > 0) {
 		ShutdownCache();
 	}
-	// Takes ownership.
-	delete backend_;
 }
 
 bool CachingFileLoader::Exists() {
 	if (exists_ == -1) {
-		exists_ = backend_->Exists() ? 1 : 0;
+		exists_ = ProxiedFileLoader::Exists() ? 1 : 0;
 	}
 	return exists_ == 1;
 }
 
 bool CachingFileLoader::ExistsFast() {
 	if (exists_ == -1) {
-		return backend_->ExistsFast();
+		return ProxiedFileLoader::ExistsFast();
 	}
 	return exists_ == 1;
 }
 
 bool CachingFileLoader::IsDirectory() {
 	if (isDirectory_ == -1) {
-		isDirectory_ = backend_->IsDirectory() ? 1 : 0;
+		isDirectory_ = ProxiedFileLoader::IsDirectory() ? 1 : 0;
 	}
 	return isDirectory_ == 1;
 }
@@ -69,10 +67,6 @@ bool CachingFileLoader::IsDirectory() {
 s64 CachingFileLoader::FileSize() {
 	Prepare();
 	return filesize_;
-}
-
-std::string CachingFileLoader::Path() const {
-	return backend_->Path();
 }
 
 size_t CachingFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags) {
@@ -115,9 +109,11 @@ void CachingFileLoader::ShutdownCache() {
 	// TODO: Maybe add some hint that deletion is coming soon?
 	// We can't delete while the thread is running, so have to wait.
 	// This should only happen from the menu.
-	while (aheadThread_) {
+	while (aheadThreadRunning_) {
 		sleep_ms(1);
 	}
+	if (aheadThread_.joinable())
+		aheadThread_.join();
 
 	std::lock_guard<std::recursive_mutex> guard(blocksMutex_);
 	for (auto block : blocks_) {
@@ -258,7 +254,7 @@ bool CachingFileLoader::MakeCacheSpaceFor(size_t blocks, bool readingAhead) {
 
 void CachingFileLoader::StartReadAhead(s64 pos) {
 	std::lock_guard<std::recursive_mutex> guard(blocksMutex_);
-	if (aheadThread_) {
+	if (aheadThreadRunning_) {
 		// Already going.
 		return;
 	}
@@ -267,8 +263,10 @@ void CachingFileLoader::StartReadAhead(s64 pos) {
 		return;
 	}
 
-	aheadThread_ = true;
-	std::thread th([this, pos] {
+	aheadThreadRunning_ = true;
+	if (aheadThread_.joinable())
+		aheadThread_.join();
+	aheadThread_ = std::thread([this, pos] {
 		setCurrentThreadName("FileLoaderReadAhead");
 
 		std::unique_lock<std::recursive_mutex> guard(blocksMutex_);
@@ -284,15 +282,6 @@ void CachingFileLoader::StartReadAhead(s64 pos) {
 			}
 		}
 
-		aheadThread_ = false;
+		aheadThreadRunning_ = false;
 	});
-	th.detach();
-}
-
-bool CachingFileLoader::IsRemote() {
-	return backend_->IsRemote();
-}
-
-void CachingFileLoader::Cancel() {
-	backend_->Cancel();
 }

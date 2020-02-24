@@ -19,6 +19,10 @@
 class GLRInputLayout;
 class GLPushBuffer;
 
+namespace Draw {
+class DrawContext;
+}
+
 class GLRTexture {
 public:
 	~GLRTexture() {
@@ -52,7 +56,9 @@ public:
 
 	GLuint handle = 0;
 	GLRTexture color_texture;
-	GLuint z_stencil_buffer = 0;  // Either this is set, or the two below.
+	// Either z_stencil_texture, z_stencil_buffer, or (z_buffer and stencil_buffer) are set.
+	GLuint z_stencil_buffer = 0;
+	GLRTexture z_stencil_texture;
 	GLuint z_buffer = 0;
 	GLuint stencil_buffer = 0;
 
@@ -226,6 +232,10 @@ public:
 	void Map();
 	void Unmap();
 
+	bool IsReady() const {
+		return writePtr_ != nullptr;
+	}
+
 	// When using the returned memory, make sure to bind the returned vkbuf.
 	// This will later allow for handling overflow correctly.
 	size_t Allocate(size_t numBytes, GLRBuffer **vkbuf) {
@@ -363,7 +373,7 @@ public:
 	GLRenderManager();
 	~GLRenderManager();
 
-	void ThreadStart();
+	void ThreadStart(Draw::DrawContext *draw);
 	void ThreadEnd();
 	bool ThreadFrame();  // Returns false to request exiting the loop.
 
@@ -515,19 +525,32 @@ public:
 	}
 
 	// Takes ownership over the data pointer and delete[]-s it.
-	void TextureImage(GLRTexture *texture, int level, int width, int height, GLenum internalFormat, GLenum format, GLenum type, uint8_t *data, GLRAllocType allocType = GLRAllocType::NEW, bool linearFilter = false) {
+	void TextureImage(GLRTexture *texture, int level, int width, int height, Draw::DataFormat format, uint8_t *data, GLRAllocType allocType = GLRAllocType::NEW, bool linearFilter = false) {
 		GLRInitStep step{ GLRInitStepType::TEXTURE_IMAGE };
 		step.texture_image.texture = texture;
 		step.texture_image.data = data;
-		step.texture_image.internalFormat = internalFormat;
 		step.texture_image.format = format;
-		step.texture_image.type = type;
 		step.texture_image.level = level;
 		step.texture_image.width = width;
 		step.texture_image.height = height;
 		step.texture_image.allocType = allocType;
 		step.texture_image.linearFilter = linearFilter;
 		initSteps_.push_back(step);
+	}
+
+	void TextureSubImage(GLRTexture *texture, int level, int x, int y, int width, int height, Draw::DataFormat format, uint8_t *data, GLRAllocType allocType = GLRAllocType::NEW) {
+		_dbg_assert_(G3D, curRenderStep_ && curRenderStep_->stepType == GLRStepType::RENDER);
+		GLRRenderData _data{ GLRRenderCommand::TEXTURE_SUBIMAGE };
+		_data.texture_subimage.texture = texture;
+		_data.texture_subimage.data = data;
+		_data.texture_subimage.format = format;
+		_data.texture_subimage.level = level;
+		_data.texture_subimage.x = x;
+		_data.texture_subimage.y = y;
+		_data.texture_subimage.width = width;
+		_data.texture_subimage.height = height;
+		_data.texture_subimage.allocType = allocType;
+		curRenderStep_->commands.push_back(_data);
 	}
 
 	void FinalizeTexture(GLRTexture *texture, int maxLevels, bool genMips) {

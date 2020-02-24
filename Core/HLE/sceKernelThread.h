@@ -31,7 +31,7 @@ class DebugInterface;
 
 int sceKernelChangeThreadPriority(SceUID threadID, int priority);
 SceUID __KernelCreateThreadInternal(const char *threadName, SceUID moduleID, u32 entry, u32 prio, int stacksize, u32 attr);
-int __KernelCreateThread(const char *threadName, SceUID moduleID, u32 entry, u32 prio, int stacksize, u32 attr, u32 optionAddr);
+int __KernelCreateThread(const char *threadName, SceUID moduleID, u32 entry, u32 prio, int stacksize, u32 attr, u32 optionAddr, bool allowKernel);
 int sceKernelCreateThread(const char *threadName, u32 entry, u32 prio, int stacksize, u32 attr, u32 optionAddr);
 int sceKernelDelayThread(u32 usec);
 int sceKernelDelayThreadCB(u32 usec);
@@ -80,7 +80,7 @@ struct SceKernelSysClock {
 
 // TODO: Map these to PSP wait types.  Most of these are wrong.
 // remember to update the waitTypeNames array in sceKernelThread.cpp when changing these
-enum WaitType
+enum WaitType : int
 {
 	WAITTYPE_NONE         = 0,
 	WAITTYPE_SLEEP        = 1,
@@ -161,9 +161,12 @@ KernelObject *__KernelCallbackObject();
 
 void __KernelScheduleWakeup(int threadnumber, s64 usFromNow);
 SceUID __KernelGetCurThread();
+int KernelCurThreadPriority();
+bool KernelChangeThreadPriority(SceUID threadID, int priority);
 u32 __KernelGetCurThreadStack();
 u32 __KernelGetCurThreadStackStart();
 const char *__KernelGetThreadName(SceUID threadID);
+bool KernelIsThreadDormant(SceUID threadID);
 
 void __KernelSaveContext(ThreadContext *ctx, bool vfpuEnabled);
 void __KernelLoadContext(ThreadContext *ctx, bool vfpuEnabled);

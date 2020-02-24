@@ -51,6 +51,7 @@ public:
 protected:
 	void CreateViews() override;
 	UI::EventReturn OnDevTools(UI::EventParams &params);
+	UI::EventReturn OnDisableCardboard(UI::EventParams &params);
 
 private:
 	void bootGame(const std::string &filename);
@@ -66,8 +67,6 @@ private:
 	void setVKeyAnalogX(int stick, int virtualKeyMin, int virtualKeyMax);
 	void setVKeyAnalogY(int stick, int virtualKeyMin, int virtualKeyMax);
 
-	void releaseButtons();
-
 	void autoLoad();
 	void checkPowerDown();
 
@@ -80,7 +79,6 @@ private:
 	bool invalid_;
 	bool quit_;
 	bool stopRender_ = false;
-	bool hasVisibleUI_ = true;
 	std::string errorMessage_;
 
 	// If set, pauses at the end of the frame.
@@ -105,4 +103,6 @@ private:
 	UI::VisibilityTween *loadingViewVisible_ = nullptr;
 	UI::Spinner *loadingSpinner_ = nullptr;
 	UI::TextView *loadingTextView_ = nullptr;
+
+	UI::Button *cardboardDisableButton_ = nullptr;
 };

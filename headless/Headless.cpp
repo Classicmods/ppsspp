@@ -74,6 +74,9 @@ std::string System_GetProperty(SystemProperty prop) { return ""; }
 int System_GetPropertyInt(SystemProperty prop) {
 	return -1;
 }
+float System_GetPropertyFloat(SystemProperty prop) {
+	return -1;
+}
 bool System_GetPropertyBool(SystemProperty prop) {
 	return false;
 }
@@ -163,8 +166,8 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, bool 
 	Core_UpdateDebugStats(g_Config.bShowDebugStats || g_Config.bLogFrameDrops);
 
 	PSP_BeginHostFrame();
-	if (coreParameter.thin3d)
-		coreParameter.thin3d->BeginFrame();
+	if (coreParameter.graphicsContext && coreParameter.graphicsContext->GetDrawContext())
+		coreParameter.graphicsContext->GetDrawContext()->BeginFrame();
 
 	coreState = CORE_RUNNING;
 	while (coreState == CORE_RUNNING)
@@ -190,8 +193,8 @@ bool RunAutoTest(HeadlessHost *headlessHost, CoreParameter &coreParameter, bool 
 	}
 	PSP_EndHostFrame();
 
-	if (coreParameter.thin3d)
-		coreParameter.thin3d->EndFrame();
+	if (coreParameter.graphicsContext && coreParameter.graphicsContext->GetDrawContext())
+		coreParameter.graphicsContext->GetDrawContext()->EndFrame();
 
 	PSP_Shutdown();
 
@@ -225,7 +228,7 @@ int main(int argc, const char* argv[])
 	const char *stateToLoad = 0;
 	GPUCore gpuCore = GPUCORE_NULL;
 	CPUCore cpuCore = CPUCore::JIT;
-	
+
 	std::vector<std::string> testFilenames;
 	const char *mountIso = 0;
 	const char *mountRoot = 0;
@@ -277,9 +280,13 @@ int main(int argc, const char* argv[])
 				return printUsage(argv[0], "Unknown gpu backend specified after --graphics=. Allowed: software, directx9, directx11, vulkan, gles, null.");
 		}
 		// Default to GLES if no value selected.
-		else if (!strcmp(argv[i], "--graphics"))
+		else if (!strcmp(argv[i], "--graphics")) {
+#if PPSSPP_API(ANY_GL)
 			gpuCore = GPUCORE_GLES;
-		else if (!strncmp(argv[i], "--screenshot=", strlen("--screenshot=")) && strlen(argv[i]) > strlen("--screenshot="))
+#else
+			gpuCore = GPUCORE_DIRECTX11;
+#endif
+		} else if (!strncmp(argv[i], "--screenshot=", strlen("--screenshot=")) && strlen(argv[i]) > strlen("--screenshot="))
 			screenshotFilename = argv[i] + strlen("--screenshot=");
 		else if (!strncmp(argv[i], "--timeout=", strlen("--timeout=")) && strlen(argv[i]) > strlen("--timeout="))
 			timeout = strtod(argv[i] + strlen("--timeout="), NULL);
@@ -317,7 +324,7 @@ int main(int argc, const char* argv[])
 
 	LogManager::Init();
 	LogManager *logman = LogManager::GetInstance();
-	
+
 	PrintfLogger *printfLogger = new PrintfLogger();
 
 	for (int i = 0; i < LogTypes::NUMBER_OF_LOGS; i++) {
@@ -331,7 +338,6 @@ int main(int argc, const char* argv[])
 	coreParameter.cpuCore = cpuCore;
 	coreParameter.gpuCore = glWorking ? gpuCore : GPUCORE_NULL;
 	coreParameter.graphicsContext = graphicsContext;
-	coreParameter.thin3d = graphicsContext ? graphicsContext->GetDrawContext() : nullptr;
 	coreParameter.enableSound = false;
 	coreParameter.mountIso = mountIso ? mountIso : "";
 	coreParameter.mountRoot = mountRoot ? mountRoot : "";
@@ -354,7 +360,6 @@ int main(int argc, const char* argv[])
 	g_Config.bHardwareTransform = true;
 	g_Config.iAnisotropyLevel = 0;  // When testing mipmapping we really don't want this.
 	g_Config.bVertexCache = true;
-	g_Config.bTrueColor = true;
 	g_Config.iLanguage = PSP_SYSTEMPARAM_LANGUAGE_ENGLISH;
 	g_Config.iTimeFormat = PSP_SYSTEMPARAM_TIME_FORMAT_24HR;
 	g_Config.bEncryptSave = true;
@@ -374,8 +379,10 @@ int main(int argc, const char* argv[])
 	g_Config.bHighQualityDepth = true;
 	g_Config.bMemStickInserted = true;
 	g_Config.bFragmentTestCache = true;
+	g_Config.iAudioLatency = 1;
 
 #ifdef _WIN32
+	g_Config.internalDataDirectory = "";
 	InitSysDirectories();
 #endif
 

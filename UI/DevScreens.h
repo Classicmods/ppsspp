@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -31,7 +32,7 @@
 
 class DevMenu : public PopupScreen {
 public:
-	DevMenu(I18NCategory *i18n) : PopupScreen(i18n->T("Dev Tools")) {}
+	DevMenu(std::shared_ptr<I18NCategory> i18n) : PopupScreen(i18n->T("Dev Tools")) {}
 
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
@@ -45,6 +46,16 @@ protected:
 	UI::EventReturn OnDumpFrame(UI::EventParams &e);
 	UI::EventReturn OnDeveloperTools(UI::EventParams &e);
 	UI::EventReturn OnToggleAudioDebug(UI::EventParams &e);
+};
+
+class JitDebugScreen : public UIDialogScreenWithBackground {
+public:
+	JitDebugScreen() {}
+	virtual void CreateViews() override;
+
+private:
+	UI::EventReturn OnEnableAll(UI::EventParams &e);
+	UI::EventReturn OnDisableAll(UI::EventParams &e);
 };
 
 class LogConfigScreen : public UIDialogScreenWithBackground {

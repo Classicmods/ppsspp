@@ -120,6 +120,13 @@ struct ConfigSetting {
 		default_.i = def;
 	}
 
+	ConfigSetting(const char *ini, int *v, int def, std::function<std::string(int)> transTo, std::function<int(const std::string &)> transFrom, bool save = true, bool perGame = false)
+		: ini_(ini), type_(TYPE_INT), report_(false), save_(save), perGame_(perGame), translateTo_(transTo), translateFrom_(transFrom) {
+		ptr_.i = v;
+		cb_.i = nullptr;
+		default_.i = def;
+	}
+
 	ConfigSetting(const char *ini, uint32_t *v, uint32_t def, bool save = true, bool perGame = false)
 		: ini_(ini), type_(TYPE_UINT32), report_(false), save_(save), perGame_(perGame) {
 		ptr_.u = v;
@@ -157,6 +164,12 @@ struct ConfigSetting {
 	ConfigSetting(const char *ini, int *v, IntDefaultCallback def, bool save = true, bool perGame = false)
 		: ini_(ini), type_(TYPE_INT), report_(false), save_(save), perGame_(perGame) {
 		ptr_ .i = v;
+		cb_.i = def;
+	}
+
+	ConfigSetting(const char *ini, int *v, IntDefaultCallback def, std::function<std::string(int)> transTo, std::function<int(const std::string &)> transFrom, bool save = true, bool perGame = false)
+		: ini_(ini), type_(TYPE_INT), report_(false), save_(save), perGame_(perGame), translateTo_(transTo), translateFrom_(transFrom) {
+		ptr_.i = v;
 		cb_.i = def;
 	}
 
@@ -198,6 +211,13 @@ struct ConfigSetting {
 		case TYPE_INT:
 			if (cb_.i) {
 				default_.i = cb_.i();
+			}
+			if (translateFrom_) {
+				std::string value;
+				if (section->Get(ini_, &value, nullptr)) {
+					*ptr_.i = translateFrom_(value);
+					return true;
+				}
 			}
 			return section->Get(ini_, ptr_.i, default_.i);
 		case TYPE_UINT32:
@@ -242,6 +262,10 @@ struct ConfigSetting {
 		case TYPE_BOOL:
 			return section->Set(ini_, *ptr_.b);
 		case TYPE_INT:
+			if (translateTo_) {
+				std::string value = translateTo_(*ptr_.i);
+				return section->Set(ini_, value);
+			}
 			return section->Set(ini_, *ptr_.i);
 		case TYPE_UINT32:
 			return section->Set(ini_, *ptr_.u);
@@ -298,12 +322,22 @@ struct ConfigSetting {
 	SettingPtr ptr_;
 	Value default_;
 	Callback cb_;
+
+	// We only support transform for ints.
+	std::function<std::string(int)> translateTo_;
+	std::function<int(const std::string &)> translateFrom_;
 };
 
 struct ReportedConfigSetting : public ConfigSetting {
 	template <typename T1, typename T2>
 	ReportedConfigSetting(const char *ini, T1 *v, T2 def, bool save = true, bool perGame = false)
 		: ConfigSetting(ini, v, def, save, perGame) {
+		report_ = true;
+	}
+
+	template <typename T1, typename T2>
+	ReportedConfigSetting(const char *ini, T1 *v, T2 def, std::function<std::string(int)> transTo, std::function<int(const std::string &)> transFrom, bool save = true, bool perGame = false)
+		: ConfigSetting(ini, v, def, transTo, transFrom, save, perGame) {
 		report_ = true;
 	}
 };
@@ -396,7 +430,7 @@ static ConfigSetting generalSettings[] = {
 	ConfigSetting("ShowDebuggerOnLoad", &g_Config.bShowDebuggerOnLoad, false),
 	ConfigSetting("CheckForNewVersion", &g_Config.bCheckForNewVersion, true),
 	ConfigSetting("Language", &g_Config.sLanguageIni, &DefaultLangRegion),
-	ConfigSetting("ForceLagSync", &g_Config.bForceLagSync, false, true, true),
+	ConfigSetting("ForceLagSync2", &g_Config.bForceLagSync, false, true, true),
 	ConfigSetting("DiscordPresence", &g_Config.bDiscordPresence, true, true, false),  // Or maybe it makes sense to have it per-game? Race conditions abound...
 
 	ReportedConfigSetting("NumWorkerThreads", &g_Config.iNumWorkerThreads, &DefaultNumWorkers, true, true),
@@ -407,6 +441,7 @@ static ConfigSetting generalSettings[] = {
 	ConfigSetting("ScreenshotsAsPNG", &g_Config.bScreenshotsAsPNG, false, true, true),
 	ConfigSetting("UseFFV1", &g_Config.bUseFFV1, false),
 	ConfigSetting("DumpFrames", &g_Config.bDumpFrames, false),
+	ConfigSetting("DumpVideoOutput", &g_Config.bDumpVideoOutput, false),
 	ConfigSetting("DumpAudio", &g_Config.bDumpAudio, false),
 	ConfigSetting("SaveLoadResetsAVdumping", &g_Config.bSaveLoadResetsAVdumping, false),
 	ConfigSetting("StateSlot", &g_Config.iCurrentStateSlot, 0, true, true),
@@ -431,7 +466,7 @@ static ConfigSetting generalSettings[] = {
 	ConfigSetting("RemoteDebuggerOnStartup", &g_Config.bRemoteDebuggerOnStartup, false),
 
 #ifdef __ANDROID__
-	ConfigSetting("ScreenRotation", &g_Config.iScreenRotation, ROTATION_LOCKED_HORIZONTAL),
+	ConfigSetting("ScreenRotation", &g_Config.iScreenRotation, ROTATION_AUTO_HORIZONTAL),
 #endif
 	ConfigSetting("InternalScreenRotation", &g_Config.iInternalScreenRotation, ROTATION_LOCKED_HORIZONTAL),
 
@@ -459,26 +494,17 @@ static bool DefaultSasThread() {
 static ConfigSetting cpuSettings[] = {
 	ReportedConfigSetting("CPUCore", &g_Config.iCpuCore, &DefaultCpuCore, true, true),
 	ReportedConfigSetting("SeparateSASThread", &g_Config.bSeparateSASThread, &DefaultSasThread, true, true),
-	ReportedConfigSetting("SeparateIOThread", &g_Config.bSeparateIOThread, true, true, true),
 	ReportedConfigSetting("IOTimingMethod", &g_Config.iIOTimingMethod, IOTIMING_FAST, true, true),
 	ConfigSetting("FastMemoryAccess", &g_Config.bFastMemory, true, true, true),
 	ReportedConfigSetting("FuncReplacements", &g_Config.bFuncReplacements, true, true, true),
 	ConfigSetting("HideSlowWarnings", &g_Config.bHideSlowWarnings, false, true, false),
 	ConfigSetting("HideStateWarnings", &g_Config.bHideStateWarnings, false, true, false),
 	ConfigSetting("PreloadFunctions", &g_Config.bPreloadFunctions, false, true, true),
+	ConfigSetting("JitDisableFlags", &g_Config.uJitDisableFlags, (uint32_t)0, true, true),
 	ReportedConfigSetting("CPUSpeed", &g_Config.iLockedCPUSpeed, 0, true, true),
 
 	ConfigSetting(false),
 };
-
-static int DefaultRenderingMode() {
-	// Workaround for ancient device. Can probably be removed now as we do no longer
-	// support Froyo (Android 2.2)...
-	if (System_GetProperty(SYSPROP_NAME) == "samsung:GT-S5360") {
-		return 0;  // Non-buffered
-	}
-	return 1;
-}
 
 static int DefaultInternalResolution() {
 	// Auto on Windows, 2x on large screens, 1x elsewhere.
@@ -502,10 +528,6 @@ static bool DefaultFrameskipUnthrottle() {
 
 static int DefaultZoomType() {
 	return (int)SmallDisplayZoom::AUTO;
-}
-
-static bool DefaultTimerHack() {
-	return false;
 }
 
 static int DefaultAndroidHwScale() {
@@ -537,81 +559,157 @@ static int DefaultAndroidHwScale() {
 }
 
 static int DefaultGPUBackend() {
-#if PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(ANDROID)
-	// Where supported, let's use Vulkan.
-	if (VulkanMayBeAvailable()) {
-		return (int)GPUBackend::VULKAN;
-	}
-#endif
 #if PPSSPP_PLATFORM(WINDOWS)
 	// If no Vulkan, use Direct3D 11 on Windows 8+ (most importantly 10.)
 	if (DoesVersionMatchWindows(6, 2, 0, 0, true)) {
 		return (int)GPUBackend::DIRECT3D11;
 	}
+#elif PPSSPP_PLATFORM(ANDROID)
+	// Default to Vulkan only on Oreo 8.1 (level 27) devices or newer. Drivers before
+	// were generally too unreliable to default to (with some exceptions, of course).
+	if (System_GetPropertyInt(SYSPROP_SYSTEMVERSION) >= 27) {
+		return (int)GPUBackend::VULKAN;
+	}
 #endif
+	// TODO: On some additional Linux platforms, we should also default to Vulkan.
 	return (int)GPUBackend::OPENGL;
 }
 
 int Config::NextValidBackend() {
 	std::vector<std::string> split;
-	std::set<int> failed;
+	std::set<GPUBackend> failed;
+
 	SplitString(sFailedGPUBackends, ',', split);
 	for (const auto &str : split) {
 		if (!str.empty() && str != "ALL") {
-			failed.insert(atoi(str.c_str()));
+			failed.insert(GPUBackendFromString(str));
 		}
 	}
 
-	if (failed.count(iGPUBackend)) {
+	// Count these as "failed" too so we don't pick them.
+	SplitString(sDisabledGPUBackends, ',', split);
+	for (const auto &str : split) {
+		if (!str.empty()) {
+			failed.insert(GPUBackendFromString(str));
+		}
+	}
+
+	if (failed.count((GPUBackend)iGPUBackend)) {
 		ERROR_LOG(LOADER, "Graphics backend failed for %d, trying another", iGPUBackend);
 
 #if (PPSSPP_PLATFORM(WINDOWS) || PPSSPP_PLATFORM(ANDROID)) && !PPSSPP_PLATFORM(UWP)
-		if (VulkanMayBeAvailable() && !failed.count((int)GPUBackend::VULKAN)) {
+		if (!failed.count(GPUBackend::VULKAN) && VulkanMayBeAvailable()) {
 			return (int)GPUBackend::VULKAN;
 		}
 #endif
 #if PPSSPP_PLATFORM(WINDOWS)
-		if (DoesVersionMatchWindows(6, 1, 0, 0, true) && !failed.count((int)GPUBackend::DIRECT3D11)) {
+		if (!failed.count(GPUBackend::DIRECT3D11) && DoesVersionMatchWindows(6, 1, 0, 0, true)) {
 			return (int)GPUBackend::DIRECT3D11;
 		}
 #endif
-#if !PPSSPP_PLATFORM(UWP)
-		if (!failed.count((int)GPUBackend::OPENGL)) {
+#if PPSSPP_API(ANY_GL)
+		if (!failed.count(GPUBackend::OPENGL)) {
 			return (int)GPUBackend::OPENGL;
 		}
 #endif
-#if PPSSPP_PLATFORM(WINDOWS) && !PPSSPP_PLATFORM(UWP)
-		if (!failed.count((int)GPUBackend::DIRECT3D9)) {
+#if PPSSPP_API(D3D9)
+		if (!failed.count(GPUBackend::DIRECT3D9)) {
 			return (int)GPUBackend::DIRECT3D9;
 		}
 #endif
 
-		// They've all failed.  Let them try the default.
+		// They've all failed.  Let them try the default - or on Android, OpenGL.
 		sFailedGPUBackends += ",ALL";
 		ERROR_LOG(LOADER, "All graphics backends failed");
+#if PPSSPP_PLATFORM(ANDROID)
+		return (int)GPUBackend::OPENGL;
+#else
 		return DefaultGPUBackend();
+#endif
 	}
 
 	return iGPUBackend;
+}
+
+bool Config::IsBackendEnabled(GPUBackend backend, bool validate) {
+	std::vector<std::string> split;
+
+	SplitString(sDisabledGPUBackends, ',', split);
+	for (const auto &str : split) {
+		if (str.empty())
+			continue;
+		auto match = GPUBackendFromString(str);
+		if (match == backend)
+			return false;
+	}
+
+#if PPSSPP_PLATFORM(IOS)
+	if (backend != GPUBackend::OPENGL)
+		return false;
+#elif PPSSPP_PLATFORM(UWP)
+	if (backend != GPUBackend::DIRECT3D11)
+		return false;
+#elif PPSSPP_PLATFORM(WINDOWS)
+	if (validate) {
+		if (backend == GPUBackend::DIRECT3D11 && !DoesVersionMatchWindows(6, 0, 0, 0, true))
+			return false;
+	}
+#else
+	if (backend == GPUBackend::DIRECT3D11 || backend == GPUBackend::DIRECT3D9)
+		return false;
+#endif
+
+#if !PPSSPP_API(ANY_GL)
+	if (backend == GPUBackend::OPENGL)
+		return false;
+#endif
+#if !PPSSPP_PLATFORM(IOS)
+	if (validate) {
+		if (backend == GPUBackend::VULKAN && !VulkanMayBeAvailable())
+			return false;
+	}
+#endif
+
+	return true;
 }
 
 static bool DefaultVertexCache() {
 	return DefaultGPUBackend() == (int)GPUBackend::OPENGL;
 }
 
+template <typename T, std::string (*FTo)(T), T (*FFrom)(const std::string &)>
+struct ConfigTranslator {
+	static std::string To(int v) {
+		return StringFromInt(v) + " (" + FTo(T(v)) + ")";
+	}
+
+	static int From(const std::string &v) {
+		int result;
+		if (TryParse(v, &result)) {
+			return result;
+		}
+		return (int)FFrom(v);
+	}
+};
+
+typedef ConfigTranslator<GPUBackend, GPUBackendToString, GPUBackendFromString> GPUBackendTranslator;
+
 static ConfigSetting graphicsSettings[] = {
-	ConfigSetting("EnableCardboard", &g_Config.bEnableCardboard, false, true, true),
+	ConfigSetting("EnableCardboardVR", &g_Config.bEnableCardboardVR, false, true, true),
 	ConfigSetting("CardboardScreenSize", &g_Config.iCardboardScreenSize, 50, true, true),
 	ConfigSetting("CardboardXShift", &g_Config.iCardboardXShift, 0, true, true),
 	ConfigSetting("CardboardYShift", &g_Config.iCardboardXShift, 0, true, true),
 	ConfigSetting("ShowFPSCounter", &g_Config.iShowFPSCounter, 0, true, true),
-	ReportedConfigSetting("GraphicsBackend", &g_Config.iGPUBackend, &DefaultGPUBackend),
+	ReportedConfigSetting("GraphicsBackend", &g_Config.iGPUBackend, &DefaultGPUBackend, &GPUBackendTranslator::To, &GPUBackendTranslator::From, true, false),
 	ConfigSetting("FailedGraphicsBackends", &g_Config.sFailedGPUBackends, ""),
+	ConfigSetting("DisabledGraphicsBackends", &g_Config.sDisabledGPUBackends, ""),
 	ConfigSetting("VulkanDevice", &g_Config.sVulkanDevice, "", true, false),
 #ifdef _WIN32
 	ConfigSetting("D3D11Device", &g_Config.sD3D11Device, "", true, false),
 #endif
-	ReportedConfigSetting("RenderingMode", &g_Config.iRenderingMode, &DefaultRenderingMode, true, true),
+	ConfigSetting("CameraDevice", &g_Config.sCameraDevice, "", true, false),
+	ConfigSetting("VendorBugChecksEnabled", &g_Config.bVendorBugChecksEnabled, true, false, false),
+	ReportedConfigSetting("RenderingMode", &g_Config.iRenderingMode, 1, true, true),
 	ConfigSetting("SoftwareRenderer", &g_Config.bSoftwareRendering, false, true, true),
 	ReportedConfigSetting("HardwareTransform", &g_Config.bHardwareTransform, true, true, true),
 	ReportedConfigSetting("SoftwareSkinning", &g_Config.bSoftwareSkinning, true, true, true),
@@ -621,6 +719,7 @@ static ConfigSetting graphicsSettings[] = {
 	ReportedConfigSetting("AndroidHwScale", &g_Config.iAndroidHwScale, &DefaultAndroidHwScale),
 	ReportedConfigSetting("HighQualityDepth", &g_Config.bHighQualityDepth, true, true, true),
 	ReportedConfigSetting("FrameSkip", &g_Config.iFrameSkip, 0, true, true),
+	ReportedConfigSetting("FrameSkipType", &g_Config.iFrameSkipType, 0, true, true),
 	ReportedConfigSetting("AutoFrameSkip", &g_Config.bAutoFrameSkip, false, true, true),
 	ConfigSetting("FrameRate", &g_Config.iFpsLimit1, 0, true, true),
 	ConfigSetting("FrameRate2", &g_Config.iFpsLimit2, -1, true, true),
@@ -628,7 +727,6 @@ static ConfigSetting graphicsSettings[] = {
 #if defined(USING_WIN_UI)
 	ConfigSetting("RestartRequired", &g_Config.bRestartRequired, false, false),
 #endif
-	ReportedConfigSetting("ForceMaxEmulatedFPS", &g_Config.iForceMaxEmulatedFPS, 60, true, true),
 
 	// Most low-performance (and many high performance) mobile GPUs do not support aniso anyway so defaulting to 4 is fine.
 	ConfigSetting("AnisotropyLevel", &g_Config.iAnisotropyLevel, 4, true, true),
@@ -650,20 +748,18 @@ static ConfigSetting graphicsSettings[] = {
 	ConfigSetting("ImmersiveMode", &g_Config.bImmersiveMode, false, true, true),
 	ConfigSetting("SustainedPerformanceMode", &g_Config.bSustainedPerformanceMode, false, true, true),
 
-	ReportedConfigSetting("TrueColor", &g_Config.bTrueColor, true, true, true),
 	ReportedConfigSetting("ReplaceTextures", &g_Config.bReplaceTextures, true, true, true),
 	ReportedConfigSetting("SaveNewTextures", &g_Config.bSaveNewTextures, false, true, true),
-	ReportedConfigSetting("IgnoreTextureFilenames", &g_Config.bIgnoreTextureFilenames, true, true, false),
+	ConfigSetting("IgnoreTextureFilenames", &g_Config.bIgnoreTextureFilenames, false, true, true),
 
 	ReportedConfigSetting("TexScalingLevel", &g_Config.iTexScalingLevel, 1, true, true),
 	ReportedConfigSetting("TexScalingType", &g_Config.iTexScalingType, 0, true, true),
 	ReportedConfigSetting("TexDeposterize", &g_Config.bTexDeposterize, false, true, true),
+	ReportedConfigSetting("TexHardwareScaling", &g_Config.bTexHardwareScaling, false, true, true),
 	ConfigSetting("VSyncInterval", &g_Config.bVSync, false, true, true),
-	ReportedConfigSetting("DisableStencilTest", &g_Config.bDisableStencilTest, false, true, true),
 	ReportedConfigSetting("BloomHack", &g_Config.iBloomHack, 0, true, true),
 
 	// Not really a graphics setting...
-	ReportedConfigSetting("TimerHack", &g_Config.bTimerHack, &DefaultTimerHack, true, true),
 	ReportedConfigSetting("SplineBezierQuality", &g_Config.iSplineBezierQuality, 2, true, true),
 	ReportedConfigSetting("HardwareTessellation", &g_Config.bHardwareTessellation, false, true, true),
 	ReportedConfigSetting("PostShader", &g_Config.sPostShaderName, "Off", true, true),
@@ -684,9 +780,11 @@ static ConfigSetting soundSettings[] = {
 	ConfigSetting("AudioBackend", &g_Config.iAudioBackend, 0, true, true),
 	ConfigSetting("AudioLatency", &g_Config.iAudioLatency, 1, true, true),
 	ConfigSetting("ExtraAudioBuffering", &g_Config.bExtraAudioBuffering, false, true, false),
-	ConfigSetting("SoundSpeedHack", &g_Config.bSoundSpeedHack, false, true, true),
 	ConfigSetting("AudioResampler", &g_Config.bAudioResampler, true, true, true),
 	ConfigSetting("GlobalVolume", &g_Config.iGlobalVolume, VOLUME_MAX, true, true),
+	ConfigSetting("AltSpeedVolume", &g_Config.iAltSpeedVolume, -1, true, true),
+	ConfigSetting("AudioDevice", &g_Config.sAudioDevice, "", true, false),
+	ConfigSetting("AutoAudioDevice", &g_Config.bAutoAudioDevice, true, true, false),
 
 	ConfigSetting(false),
 };
@@ -757,6 +855,10 @@ static ConfigSetting controlSettings[] = {
 	ConfigSetting("TouchButtonHideSeconds", &g_Config.iTouchButtonHideSeconds, 20, true, true),
 	ConfigSetting("AutoCenterTouchAnalog", &g_Config.bAutoCenterTouchAnalog, false, true, true),
 
+	// Snap touch control position
+	ConfigSetting("TouchSnapToGrid", &g_Config.bTouchSnapToGrid, false, true, true),
+	ConfigSetting("TouchSnapGridSize", &g_Config.iTouchSnapGridSize, 64, true, true),
+
 	// -1.0f means uninitialized, set in GamepadEmu::CreatePadLayout().
 	ConfigSetting("ActionButtonSpacing2", &g_Config.fActionButtonSpacing, 1.0f, true, true),
 	ConfigSetting("ActionButtonCenterX", "ActionButtonCenterY", "ActionButtonScale", nullptr, &g_Config.touchActionButtonCenter, defaultTouchPosShow, true, true),
@@ -770,6 +872,7 @@ static ConfigSetting controlSettings[] = {
 	ConfigSetting("LKeyX", "LKeyY", "LKeyScale", "ShowTouchLTrigger", &g_Config.touchLKey, defaultTouchPosShow, true, true),
 	ConfigSetting("RKeyX", "RKeyY", "RKeyScale", "ShowTouchRTrigger", &g_Config.touchRKey, defaultTouchPosShow, true, true),
 	ConfigSetting("AnalogStickX", "AnalogStickY", "AnalogStickScale", "ShowAnalogStick", &g_Config.touchAnalogStick, defaultTouchPosShow, true, true),
+	ConfigSetting("RightAnalogStickX", "RightAnalogStickY", "RightAnalogStickScale", "ShowRightAnalogStick", &g_Config.touchRightAnalogStick, defaultTouchPosHide, true, true),
 
 	ConfigSetting("fcombo0X", "fcombo0Y", "comboKeyScale0", "ShowComboKey0", &g_Config.touchCombo0, defaultTouchPosHide, true, true),
 	ConfigSetting("fcombo1X", "fcombo1Y", "comboKeyScale1", "ShowComboKey1", &g_Config.touchCombo1, defaultTouchPosHide, true, true),
@@ -778,6 +881,7 @@ static ConfigSetting controlSettings[] = {
 	ConfigSetting("fcombo4X", "fcombo4Y", "comboKeyScale4", "ShowComboKey4", &g_Config.touchCombo4, defaultTouchPosHide, true, true),
 	ConfigSetting("Speed1KeyX", "Speed1KeyY", "Speed1KeyScale", "ShowSpeed1Key", &g_Config.touchSpeed1Key, defaultTouchPosHide, true, true),
 	ConfigSetting("Speed2KeyX", "Speed2KeyY", "Speed2KeyScale", "ShowSpeed2Key", &g_Config.touchSpeed2Key, defaultTouchPosHide, true, true),
+	ConfigSetting("RapidFireKeyX", "RapidFireKeyY", "RapidFireKeyScale", "ShowRapidFireKey", &g_Config.touchRapidFireKey, defaultTouchPosHide, true, true),
 
 #ifdef _WIN32
 	ConfigSetting("DInputAnalogDeadzone", &g_Config.fDInputAnalogDeadzone, 0.1f, true, true),
@@ -834,7 +938,7 @@ static ConfigSetting systemParamSettings[] = {
 	ReportedConfigSetting("PSPModel", &g_Config.iPSPModel, &DefaultPSPModel, true, true),
 	ReportedConfigSetting("PSPFirmwareVersion", &g_Config.iFirmwareVersion, PSP_DEFAULT_FIRMWARE, true, true),
 	ConfigSetting("NickName", &g_Config.sNickName, "PPSSPP", true, true),
-	ConfigSetting("proAdhocServer", &g_Config.proAdhocServer, "coldbird.net", true, true),
+	ConfigSetting("proAdhocServer", &g_Config.proAdhocServer, "myneighborsushicat.com", true, true),
 	ConfigSetting("MacAddress", &g_Config.sMACAddress, "", true, true),
 	ConfigSetting("PortOffset", &g_Config.iPortOffset, 0, true, true),
 	ReportedConfigSetting("Language", &g_Config.iLanguage, &DefaultSystemParamLanguage, true, true),
@@ -869,11 +973,13 @@ static ConfigSetting debuggerSettings[] = {
 	ConfigSetting("FontWidth", &g_Config.iFontWidth, 8),
 	ConfigSetting("FontHeight", &g_Config.iFontHeight, 12),
 	ConfigSetting("DisplayStatusBar", &g_Config.bDisplayStatusBar, true),
-	ConfigSetting("ShowBottomTabTitles",&g_Config.bShowBottomTabTitles,true),
+	ConfigSetting("ShowBottomTabTitles",&g_Config.bShowBottomTabTitles, true),
 	ConfigSetting("ShowDeveloperMenu", &g_Config.bShowDeveloperMenu, false),
 	ConfigSetting("ShowAllocatorDebug", &g_Config.bShowAllocatorDebug, false, false),
+	ConfigSetting("ShowGpuProfile", &g_Config.bShowGpuProfile, false, false),
 	ConfigSetting("SkipDeadbeefFilling", &g_Config.bSkipDeadbeefFilling, false),
 	ConfigSetting("FuncHashMap", &g_Config.bFuncHashMap, false),
+	ConfigSetting("DrawFrameGraph", &g_Config.bDrawFrameGraph, false),
 
 	ConfigSetting(false),
 };
@@ -1048,8 +1154,9 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	vPinnedPaths.clear();
 	for (auto it = pinnedPaths.begin(), end = pinnedPaths.end(); it != end; ++it) {
 		// Unpin paths that are deleted automatically.
-		if (File::Exists(it->second)) {
-			vPinnedPaths.push_back(File::ResolvePath(it->second));
+		const std::string &path = it->second;
+		if (startsWith(path, "http://") || startsWith(path, "https://") || File::Exists(path)) {
+			vPinnedPaths.push_back(File::ResolvePath(path));
 		}
 	}
 
@@ -1100,7 +1207,7 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	//sadly it won't benefit from all the "version conversion" going on up-above
 	//but these configs shouldn't contain older versions anyhow
 	if (bGameSpecific) {
-		loadGameConfig(gameId_);
+		loadGameConfig(gameId_, gameIdTitle_);
 	}
 
 	CleanRecent();
@@ -1120,14 +1227,13 @@ void Config::Load(const char *iniFileName, const char *controllerIniFilename) {
 	}
 }
 
-void Config::Save() {
+void Config::Save(const char *saveReason) {
 	if (jitForcedOff) {
 		// if JIT has been forced off, we don't want to screw up the user's ppsspp.ini
 		g_Config.iCpuCore = (int)CPUCore::JIT;
 	}
 	if (iniFilename_.size() && g_Config.bSaveSettings) {
-
-		saveGameConfig(gameId_);
+		saveGameConfig(gameId_, gameIdTitle_);
 
 		CleanRecent();
 		IniFile iniFile;
@@ -1173,11 +1279,11 @@ void Config::Save() {
 			LogManager::GetInstance()->SaveConfig(log);
 
 		if (!iniFile.Save(iniFilename_.c_str())) {
-			ERROR_LOG(LOADER, "Error saving config - can't write ini '%s'", iniFilename_.c_str());
+			ERROR_LOG(LOADER, "Error saving config (%s)- can't write ini '%s'", saveReason, iniFilename_.c_str());
 			System_SendMessage("toast", "Failed to save settings!\nCheck permissions, or try to restart the device.");
 			return;
 		}
-		INFO_LOG(LOADER, "Config saved: '%s'", iniFilename_.c_str());
+		INFO_LOG(LOADER, "Config saved (%s): '%s'", saveReason, iniFilename_.c_str());
 
 		if (!bGameSpecific) //otherwise we already did this in saveGameConfig()
 		{
@@ -1363,9 +1469,10 @@ bool Config::hasGameConfig(const std::string &pGameId) {
 	return File::Exists(fullIniFilePath);
 }
 
-void Config::changeGameSpecific(const std::string &pGameId) {
-	Save();
+void Config::changeGameSpecific(const std::string &pGameId, const std::string &title) {
+	Save("changeGameSpecific");
 	gameId_ = pGameId;
+	gameIdTitle_ = title;
 	bGameSpecific = !pGameId.empty();
 }
 
@@ -1395,7 +1502,7 @@ std::string Config::getGameConfigFile(const std::string &pGameId) {
 	return iniFileNameFull;
 }
 
-bool Config::saveGameConfig(const std::string &pGameId) {
+bool Config::saveGameConfig(const std::string &pGameId, const std::string &title) {
 	if (pGameId.empty()) {
 		return false;
 	}
@@ -1403,6 +1510,9 @@ bool Config::saveGameConfig(const std::string &pGameId) {
 	std::string fullIniFilePath = getGameConfigFile(pGameId);
 
 	IniFile iniFile;
+
+	IniFile::Section *top = iniFile.GetOrCreateSection("");
+	top->AddComment(StringFromFormat("Game config for %s - %s", pGameId.c_str(), title.c_str()));
 
 	IterateSettings(iniFile, [](IniFile::Section *section, ConfigSetting *setting) {
 		if (setting->perGame_) {
@@ -1416,7 +1526,7 @@ bool Config::saveGameConfig(const std::string &pGameId) {
 	return true;
 }
 
-bool Config::loadGameConfig(const std::string &pGameId) {
+bool Config::loadGameConfig(const std::string &pGameId, const std::string &title) {
 	std::string iniFileNameFull = getGameConfigFile(pGameId);
 
 	if (!hasGameConfig(pGameId)) {
@@ -1424,7 +1534,7 @@ bool Config::loadGameConfig(const std::string &pGameId) {
 		return false;
 	}
 
-	changeGameSpecific(pGameId);
+	changeGameSpecific(pGameId, title);
 	IniFile iniFile;
 	iniFile.Load(iniFileNameFull);
 
@@ -1483,6 +1593,7 @@ void Config::ResetControlLayout() {
 	reset(g_Config.touchLKey);
 	reset(g_Config.touchRKey);
 	reset(g_Config.touchAnalogStick);
+	reset(g_Config.touchRightAnalogStick);
 	reset(g_Config.touchCombo0);
 	reset(g_Config.touchCombo1);
 	reset(g_Config.touchCombo2);
@@ -1490,6 +1601,7 @@ void Config::ResetControlLayout() {
 	reset(g_Config.touchCombo4);
 	reset(g_Config.touchSpeed1Key);
 	reset(g_Config.touchSpeed2Key);
+	reset(g_Config.touchRapidFireKey);
 }
 
 void Config::GetReportingInfo(UrlEncoder &data) {

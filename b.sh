@@ -16,6 +16,12 @@ do
 		--ios) CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/ios.cmake ${CMAKE_ARGS}"
 			TARGET_OS=iOS
 			;;
+		--rpi-armv6)
+			CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/raspberry.armv6.cmake ${CMAKE_ARGS}"
+			;;
+		--rpi)
+			CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/raspberry.armv7.cmake ${CMAKE_ARGS}"
+			;;
 		--android) CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=android/android.toolchain.cmake ${CMAKE_ARGS}"
 			TARGET_OS=Android
 			PACKAGE=1
@@ -25,14 +31,9 @@ do
 			;;
 		--release)
 			CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release ${CMAKE_ARGS}"
-			QMAKE_ARGS="CONFIG+=release ${QMAKE_ARGS}"
 			;;
 		--debug)
 			CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Debug ${CMAKE_ARGS}"
-			QMAKE_ARGS="CONFIG+=debug ${QMAKE_ARGS}"
-			;;
-		--system-ffmpeg)
-			QMAKE_ARGS="CONFIG+=system_ffmpeg ${QMAKE_ARGS}"
 			;;
 		--headless) echo "Headless mode enabled"
 			CMAKE_ARGS="-DHEADLESS=ON ${CMAKE_ARGS}"

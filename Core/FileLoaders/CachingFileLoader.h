@@ -19,28 +19,25 @@
 
 #include <map>
 #include <mutex>
+#include <thread>
 
 #include "Common/CommonTypes.h"
 #include "Core/Loaders.h"
 
-class CachingFileLoader : public FileLoader {
+class CachingFileLoader : public ProxiedFileLoader {
 public:
 	CachingFileLoader(FileLoader *backend);
 	~CachingFileLoader() override;
 
-	bool IsRemote() override;
 	bool Exists() override;
 	bool ExistsFast() override;
 	bool IsDirectory() override;
 	s64 FileSize() override;
-	std::string Path() const override;
 
 	size_t ReadAt(s64 absolutePos, size_t bytes, size_t count, void *data, Flags flags = Flags::NONE) override {
 		return ReadAt(absolutePos, bytes * count, data, flags) / bytes;
 	}
 	size_t ReadAt(s64 absolutePos, size_t bytes, void *data, Flags flags = Flags::NONE) override;
-
-	void Cancel() override;
 
 private:
 	void Prepare();
@@ -61,7 +58,6 @@ private:
 	};
 
 	s64 filesize_ = 0;
-	FileLoader *backend_;
 	int exists_ = -1;
 	int isDirectory_ = -1;
 	u64 generation_;
@@ -80,6 +76,7 @@ private:
 
 	std::map<s64, BlockInfo> blocks_;
 	std::recursive_mutex blocksMutex_;
-	bool aheadThread_ = false;
+	bool aheadThreadRunning_ = false;
+	std::thread aheadThread_;
 	std::once_flag preparedFlag_;
 };

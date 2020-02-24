@@ -173,7 +173,7 @@ void DisplayLayoutScreen::resized() {
 }
 
 void DisplayLayoutScreen::onFinish(DialogResult reason) {
-	g_Config.Save();
+	g_Config.Save("DisplayLayoutScreen::onFinish");
 }
 
 UI::EventReturn DisplayLayoutScreen::OnCenter(UI::EventParams &e) {
@@ -231,9 +231,9 @@ void DisplayLayoutScreen::CreateViews() {
 
 	using namespace UI;
 
-	I18NCategory *di = GetI18NCategory("Dialog");
-	I18NCategory *gr = GetI18NCategory("Graphics");
-	I18NCategory *co = GetI18NCategory("Controls");
+	auto di = GetI18NCategory("Dialog");
+	auto gr = GetI18NCategory("Graphics");
+	auto co = GetI18NCategory("Controls");
 
 	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 

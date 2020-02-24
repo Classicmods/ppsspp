@@ -135,7 +135,7 @@ void MainThreadFunc() {
 	if (g_Config.sFailedGPUBackends.find("ALL") != std::string::npos) {
 		Reporting::ReportMessage("Graphics init error: %s", "ALL");
 
-		I18NCategory *err = GetI18NCategory("Error");
+		auto err = GetI18NCategory("Error");
 		const char *defaultErrorAll = "Failed initializing any graphics. Try upgrading your graphics drivers.";
 		const char *genericError = err->T("GenericAllGraphicsError", defaultErrorAll);
 		std::wstring title = ConvertUTF8ToWString(err->T("GenericGraphicsError", "Graphics Error"));
@@ -159,11 +159,11 @@ void MainThreadFunc() {
 		if (performingRestart) {
 			// Okay, switching graphics didn't work out.  Probably a driver bug - fallback to restart.
 			// This happens on NVIDIA when switching OpenGL -> Vulkan.
-			g_Config.Save();
+			g_Config.Save("switch_graphics_failed");
 			W32Util::ExitAndRestart();
 		}
 
-		I18NCategory *err = GetI18NCategory("Error");
+		auto err = GetI18NCategory("Error");
 		Reporting::ReportMessage("Graphics init error: %s", error_string.c_str());
 
 		const char *defaultErrorVulkan = "Failed initializing graphics. Try upgrading your graphics drivers.\n\nWould you like to try switching to OpenGL?\n\nError message:";
@@ -196,7 +196,7 @@ void MainThreadFunc() {
 			g_Config.iGPUBackend = (int)nextBackend;
 			// Clear this to ensure we try their selection.
 			g_Config.sFailedGPUBackends.clear();
-			g_Config.Save();
+			g_Config.Save("save_graphics_fallback");
 
 			W32Util::ExitAndRestart();
 		} else {

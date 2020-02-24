@@ -1,6 +1,5 @@
 // SDL/EGL implementation of the framework.
 // This is quite messy due to platform-specific implementations and #ifdef's.
-// Note: SDL1.2 implementation is deprecated and will soon be replaced by SDL2.0.
 // If your platform is not supported, it is suggested to use Qt instead.
 
 #include <unistd.h>
@@ -25,10 +24,11 @@ SDLJoystick *joystick = NULL;
 #include "base/logging.h"
 #include "base/timeutil.h"
 #include "ext/glslang/glslang/Public/ShaderLang.h"
+#include "image/png_load.h"
 #include "input/input_state.h"
 #include "input/keycodes.h"
 #include "net/resolve.h"
-#include "base/NKCodeFromSDL.h"
+#include "NKCodeFromSDL.h"
 #include "util/const_map.h"
 #include "util/text/utf8.h"
 #include "math/math_util.h"
@@ -36,9 +36,7 @@ SDLJoystick *joystick = NULL;
 #include "thread/threadutil.h"
 #include "math.h"
 
-#if !defined(__APPLE__)
 #include "SDL_syswm.h"
-#endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
 #include <X11/Xlib.h>
@@ -67,6 +65,7 @@ static int g_QuitRequested = 0;
 
 static int g_DesktopWidth = 0;
 static int g_DesktopHeight = 0;
+static float g_RefreshRate = 60.f;
 
 int getDisplayNumber(void) {
 	int displayNumber = 0;
@@ -80,6 +79,62 @@ int getDisplayNumber(void) {
 	}
 
 	return displayNumber;
+}
+
+extern void mixaudio(void *userdata, Uint8 *stream, int len) {
+	NativeMix((short *)stream, len / 4);
+}
+
+static SDL_AudioDeviceID audioDev = 0;
+
+// Must be called after NativeInit().
+static void InitSDLAudioDevice(const std::string &name = "") {
+	SDL_AudioSpec fmt, ret_fmt;
+	memset(&fmt, 0, sizeof(fmt));
+	fmt.freq = 44100;
+	fmt.format = AUDIO_S16;
+	fmt.channels = 2;
+	fmt.samples = 2048;
+	fmt.callback = &mixaudio;
+	fmt.userdata = nullptr;
+
+	std::string startDevice = name;
+	if (startDevice.empty()) {
+		startDevice = g_Config.sAudioDevice;
+	}
+
+	audioDev = 0;
+	if (!startDevice.empty()) {
+		audioDev = SDL_OpenAudioDevice(startDevice.c_str(), 0, &fmt, &ret_fmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+		if (audioDev <= 0) {
+			WLOG("Failed to open audio device: %s", startDevice.c_str());
+		}
+	}
+	if (audioDev <= 0) {
+		audioDev = SDL_OpenAudioDevice(nullptr, 0, &fmt, &ret_fmt, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+	}
+	if (audioDev <= 0) {
+		ELOG("Failed to open audio: %s", SDL_GetError());
+	} else {
+		if (ret_fmt.samples != fmt.samples) // Notify, but still use it
+			ELOG("Output audio samples: %d (requested: %d)", ret_fmt.samples, fmt.samples);
+		if (ret_fmt.freq != fmt.freq || ret_fmt.format != fmt.format || ret_fmt.channels != fmt.channels) {
+			ELOG("Sound buffer format does not match requested format.");
+			ELOG("Output audio freq: %d (requested: %d)", ret_fmt.freq, fmt.freq);
+			ELOG("Output audio format: %d (requested: %d)", ret_fmt.format, fmt.format);
+			ELOG("Output audio channels: %d (requested: %d)", ret_fmt.channels, fmt.channels);
+			ELOG("Provided output format does not match requirement, turning audio off");
+			SDL_CloseAudioDevice(audioDev);
+		}
+		SDL_PauseAudioDevice(audioDev, 0);
+	}
+}
+
+static void StopSDLAudioDevice() {
+	if (audioDev > 0) {
+		SDL_PauseAudioDevice(audioDev, 1);
+		SDL_CloseAudioDevice(audioDev);
+	}
 }
 
 // Simple implementations of System functions
@@ -116,11 +171,29 @@ void System_SendMessage(const char *command, const char *parameter) {
 	} else if (!strcmp(command, "finish")) {
 		// Do a clean exit
 		g_QuitRequested = true;
+	} else if (!strcmp(command, "graphics_restart")) {
+		// Not sure how we best do this, but do a clean exit, better than being stuck in a bad state.
+		g_QuitRequested = true;
+	} else if (!strcmp(command, "setclipboardtext")) {
+		SDL_SetClipboardText(parameter);
+	} else if (!strcmp(command, "audio_resetDevice")) {
+		StopSDLAudioDevice();
+		InitSDLAudioDevice();
 	}
 }
 
 void System_AskForPermission(SystemPermission permission) {}
 PermissionStatus System_GetPermissionStatus(SystemPermission permission) { return PERMISSION_STATUS_GRANTED; }
+
+void OpenDirectory(const char *path) {
+#if defined(_WIN32)
+	PIDLIST_ABSOLUTE pidl = ILCreateFromPath(ConvertUTF8ToWString(ReplaceAll(path, "/", "\\")).c_str());
+	if (pidl) {
+		SHOpenFolderAndSelectItems(pidl, 0, NULL, 0);
+		ILFree(pidl);
+	}
+#endif
+}
 
 void LaunchBrowser(const char *url) {
 #if defined(MOBILE_DEVICE)
@@ -184,7 +257,7 @@ std::string System_GetProperty(SystemProperty prop) {
 #elif __linux__
 		return "SDL:Linux";
 #elif __APPLE__
-		return "SDL:OSX";
+		return "SDL:macOS";
 #else
 		return "SDL:";
 #endif
@@ -205,6 +278,26 @@ std::string System_GetProperty(SystemProperty prop) {
 		}
 		return "en_US";
 	}
+	case SYSPROP_CLIPBOARD_TEXT:
+		return SDL_HasClipboardText() ? SDL_GetClipboardText() : "";
+	case SYSPROP_AUDIO_DEVICE_LIST:
+		{
+			std::string result;
+			for (int i = 0; i < SDL_GetNumAudioDevices(0); ++i) {
+				const char *name = SDL_GetAudioDeviceName(i, 0);
+				if (!name) {
+					continue;
+				}
+
+				if (i == 0) {
+					result = name;
+				} else {
+					result.append(1, '\0');
+					result.append(name);
+				}
+			}
+			return result;
+		}
 	default:
 		return "";
 	}
@@ -214,14 +307,23 @@ int System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
 		return 44100;
-	case SYSPROP_DISPLAY_REFRESH_RATE:
-		return 60000;
 	case SYSPROP_DEVICE_TYPE:
 #if defined(MOBILE_DEVICE)
 		return DEVICE_TYPE_MOBILE;
 #else
 		return DEVICE_TYPE_DESKTOP;
 #endif
+	case SYSPROP_DISPLAY_COUNT:
+		return SDL_GetNumVideoDisplays();
+	default:
+		return -1;
+	}
+}
+
+float System_GetPropertyFloat(SystemProperty prop) {
+	switch (prop) {
+	case SYSPROP_DISPLAY_REFRESH_RATE:
+		return g_RefreshRate;
 	default:
 		return -1;
 	}
@@ -240,10 +342,6 @@ bool System_GetPropertyBool(SystemProperty prop) {
 	default:
 		return false;
 	}
-}
-
-extern void mixaudio(void *userdata, Uint8 *stream, int len) {
-	NativeMix((short *)stream, len / 4);
 }
 
 // returns -1 on failure
@@ -348,9 +446,9 @@ int main(int argc, char *argv[]) {
 	SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
 
 	if (VulkanMayBeAvailable()) {
-		printf("Vulkan might be available.\n");
+		printf("DEBUG: Vulkan might be available.\n");
 	} else {
-		printf("Vulkan is not available.\n");
+		printf("DEBUG: Vulkan is not available, not using Vulkan.\n");
 	}
 
 	int set_xres = -1;
@@ -410,12 +508,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	// TODO: How do we get this into the GraphicsContext?
-#ifdef USING_EGL
-	if (EGL_Open())
-		return 1;
-#endif
-
 	// Get the video info before doing anything else, so we don't get skewed resolution results.
 	// TODO: support multiple displays correctly
 	SDL_DisplayMode displayMode;
@@ -426,6 +518,7 @@ int main(int argc, char *argv[]) {
 	}
 	g_DesktopWidth = displayMode.w;
 	g_DesktopHeight = displayMode.h;
+	g_RefreshRate = displayMode.refresh_rate;
 
 	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
 	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
@@ -433,18 +526,19 @@ int main(int argc, char *argv[]) {
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-	SDL_GL_SetSwapInterval(1);
 
-	// Is resolution is too low to run windowed
+	// Force fullscreen if the resolution is too low to run windowed.
 	if (g_DesktopWidth < 480 * 2 && g_DesktopHeight < 272 * 2) {
 		mode |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 	}
 
 	// If we're on mobile, don't try for windowed either.
-#if defined(USING_GLES2) || defined(MOBILE_DEVICE)
-    mode |= SDL_WINDOW_FULLSCREEN;
+#if defined(MOBILE_DEVICE)
+	mode |= SDL_WINDOW_FULLSCREEN;
+#elif defined(USING_FBDEV)
+	mode |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 #else
-    mode |= SDL_WINDOW_RESIZABLE;
+	mode |= SDL_WINDOW_RESIZABLE;
 #endif
 
 	if (mode & SDL_WINDOW_FULLSCREEN_DESKTOP) {
@@ -545,6 +639,20 @@ int main(int argc, char *argv[]) {
 
 	SDL_SetWindowTitle(window, (app_name_nice + " " + PPSSPP_GIT_VERSION).c_str());
 
+	char iconPath[PATH_MAX];
+	snprintf(iconPath, PATH_MAX, "%sassets/icon_regular_72.png", SDL_GetBasePath() ? SDL_GetBasePath() : "");
+	int width = 0, height = 0;
+	unsigned char *imageData;
+	if (pngLoad(iconPath, &width, &height, &imageData, false) == 1) {
+		SDL_Surface *surface = SDL_CreateRGBSurface(0, width, height, 32,
+							0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+		memcpy(surface->pixels, imageData, width*height*4);
+		SDL_SetWindowIcon(window, surface);
+		SDL_FreeSurface(surface);
+		free(imageData);
+		imageData = NULL;
+	}
+
 	// Since we render from the main thread, there's nothing done here, but we call it to avoid confusion.
 	if (!graphicsContext->InitFromRenderThread(&error_message)) {
 		printf("Init from thread error: '%s'\n", error_message.c_str());
@@ -559,32 +667,11 @@ int main(int argc, char *argv[]) {
 		NativeResized();
 	}
 
-	SDL_AudioSpec fmt, ret_fmt;
-	memset(&fmt, 0, sizeof(fmt));
-	fmt.freq = 44100;
-	fmt.format = AUDIO_S16;
-	fmt.channels = 2;
-	fmt.samples = 2048;
-	fmt.callback = &mixaudio;
-	fmt.userdata = (void *)0;
+	// Ensure that the swap interval is set after context creation (needed for kmsdrm)
+	SDL_GL_SetSwapInterval(1);
 
-	if (SDL_OpenAudio(&fmt, &ret_fmt) < 0) {
-		ELOG("Failed to open audio: %s", SDL_GetError());
-	} else {
-		if (ret_fmt.samples != fmt.samples) // Notify, but still use it
-			ELOG("Output audio samples: %d (requested: %d)", ret_fmt.samples, fmt.samples);
-		if (ret_fmt.freq != fmt.freq || ret_fmt.format != fmt.format || ret_fmt.channels != fmt.channels) {
-			ELOG("Sound buffer format does not match requested format.");
-			ELOG("Output audio freq: %d (requested: %d)", ret_fmt.freq, fmt.freq);
-			ELOG("Output audio format: %d (requested: %d)", ret_fmt.format, fmt.format);
-			ELOG("Output audio channels: %d (requested: %d)", ret_fmt.channels, fmt.channels);
-			ELOG("Provided output format does not match requirement, turning audio off");
-			SDL_CloseAudio();
-		}
-	}
+	InitSDLAudioDevice();
 
-	// Audio must be unpaused _after_ NativeInit()
-	SDL_PauseAudio(0);
 	if (joystick_enabled) {
 		joystick = new SDLJoystick();
 	} else {
@@ -600,6 +687,7 @@ int main(int argc, char *argv[]) {
 	}
 	graphicsContext->ThreadStart();
 
+	bool windowHidden = false;
 	while (true) {
 		double startTime = time_now_d();
 		SDL_Event event, touchEvent;
@@ -615,14 +703,20 @@ int main(int argc, char *argv[]) {
 #if !defined(MOBILE_DEVICE)
 			case SDL_WINDOWEVENT:
 				switch (event.window.event) {
-				case SDL_WINDOWEVENT_RESIZED:
+				case SDL_WINDOWEVENT_SIZE_CHANGED:  // better than RESIZED, more general
+				case SDL_WINDOWEVENT_MAXIMIZED:
+				case SDL_WINDOWEVENT_RESTORED:
 				{
+					windowHidden = false;
+					Core_NotifyWindowHidden(windowHidden);
+
 					Uint32 window_flags = SDL_GetWindowFlags(window);
 					bool fullscreen = (window_flags & SDL_WINDOW_FULLSCREEN);
 
-					if (UpdateScreenScale(event.window.data1, event.window.data2)) {
-						NativeMessageReceived("gpu_resized", "");
+					if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+						UpdateScreenScale(event.window.data1, event.window.data2);
 					}
+					NativeMessageReceived("gpu_resized", "");
 
 					// Set variable here in case fullscreen was toggled by hotkey
 					g_Config.bFullScreen = fullscreen;
@@ -636,6 +730,16 @@ int main(int argc, char *argv[]) {
 					break;
 				}
 
+				case SDL_WINDOWEVENT_MINIMIZED:
+				case SDL_WINDOWEVENT_HIDDEN:
+					windowHidden = true;
+					Core_NotifyWindowHidden(windowHidden);
+					break;
+				case SDL_WINDOWEVENT_EXPOSED:
+				case SDL_WINDOWEVENT_SHOWN:
+					windowHidden = false;
+					Core_NotifyWindowHidden(windowHidden);
+					break;
 				default:
 					break;
 				}
@@ -682,6 +786,8 @@ int main(int argc, char *argv[]) {
 					NativeKey(key);
 					break;
 				}
+// This behavior doesn't feel right on a macbook with a touchpad.
+#if !PPSSPP_PLATFORM(MAC)
 			case SDL_FINGERMOTION:
 				{
 					SDL_GetWindowSize(window, &w, &h);
@@ -744,6 +850,7 @@ int main(int argc, char *argv[]) {
 					SDL_PushEvent(&touchEvent);
 					break;
 				}
+#endif
 			case SDL_MOUSEBUTTONDOWN:
 				switch (event.button.button) {
 				case SDL_BUTTON_LEFT:
@@ -818,6 +925,31 @@ int main(int argc, char *argv[]) {
 					break;
 				}
 				break;
+
+#if SDL_VERSION_ATLEAST(2, 0, 4)
+			case SDL_AUDIODEVICEADDED:
+				// Automatically switch to the new device.
+				if (event.adevice.iscapture == 0) {
+					const char *name = SDL_GetAudioDeviceName(event.adevice.which, 0);
+					if (!name) {
+						break;
+					}
+					// Don't start auto switching for a second, because some devices init on start.
+					bool doAutoSwitch = g_Config.bAutoAudioDevice && framecount > 60;
+					if (doAutoSwitch || g_Config.sAudioDevice == name) {
+						StopSDLAudioDevice();
+						InitSDLAudioDevice(name ? name : "");
+					}
+				}
+				break;
+			case SDL_AUDIODEVICEREMOVED:
+				if (event.adevice.iscapture == 0 && event.adevice.which == audioDev) {
+					StopSDLAudioDevice();
+					InitSDLAudioDevice();
+				}
+				break;
+#endif
+
 			default:
 				if (joystick) {
 					joystick->ProcessInput(event);
@@ -847,7 +979,8 @@ int main(int argc, char *argv[]) {
 			// glsl_refresh(); // auto-reloads modified GLSL shaders once per second.
 		}
 
-		if (emuThreadState != (int)EmuThreadState::DISABLED) {
+		bool renderThreadPaused = windowHidden && g_Config.bPauseWhenMinimized && emuThreadState != (int)EmuThreadState::DISABLED;
+		if (emuThreadState != (int)EmuThreadState::DISABLED && !renderThreadPaused) {
 			if (!graphicsContext->ThreadFrame())
 				break;
 		}
@@ -859,7 +992,7 @@ int main(int argc, char *argv[]) {
 
 		// Simple throttling to not burn the GPU in the menu.
 		time_update();
-		if (GetUIState() != UISTATE_INGAME || !PSP_IsInited()) {
+		if (GetUIState() != UISTATE_INGAME || !PSP_IsInited() || renderThreadPaused) {
 			double diffTime = time_now_d() - startTime;
 			int sleepTime = (int)(1000.0 / 60.0) - (int)(diffTime * 1000.0);
 			if (sleepTime > 0)
@@ -892,8 +1025,10 @@ int main(int argc, char *argv[]) {
 	graphicsContext->ShutdownFromRenderThread();
 	delete graphicsContext;
 
-	SDL_PauseAudio(1);
-	SDL_CloseAudio();
+	if (audioDev > 0) {
+		SDL_PauseAudioDevice(audioDev, 1);
+		SDL_CloseAudioDevice(audioDev);
+	}
 	SDL_Quit();
 #if PPSSPP_PLATFORM(RPI)
 	bcm_host_deinit();

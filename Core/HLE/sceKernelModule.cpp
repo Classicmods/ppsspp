@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <set>
 
+#include "zlib.h"
+
 #include "base/stringutil.h"
 #include "Common/ChunkFile.h"
 #include "Common/FileUtil.h"
@@ -58,7 +60,7 @@
 #include "Core/HLE/KernelWaitHelpers.h"
 #include "Core/ELF/ParamSFO.h"
 
-#include "GPU/Debugger/Record.h"
+#include "GPU/Debugger/Playback.h"
 #include "GPU/GPU.h"
 #include "GPU/GPUInterface.h"
 #include "GPU/GPUState.h"
@@ -84,13 +86,15 @@ enum {
 };
 
 // This is a workaround for misbehaving homebrew (like TBL's Suicide Barbie (Final)).
-static const char *lieAboutSuccessModules[] = {
+static const char * const lieAboutSuccessModules[] = {
 	"flash0:/kd/audiocodec.prx",
+	"flash0:/kd/audiocodec_260.prx",
 	"flash0:/kd/libatrac3plus.prx",
 	"disc0:/PSP_GAME/SYSDIR/UPDATE/EBOOT.BIN",
 };
 
-static const char *blacklistedModules[] = {
+// Modules to not load. TODO: Look into loosening this a little (say sceFont).
+static const char * const blacklistedModules[] = {
 	"sceATRAC3plus_Library",
 	"sceFont_Library",
 	"SceFont_Library",
@@ -106,6 +110,8 @@ static const char *blacklistedModules[] = {
 	"sceNetResolver_Library",
 	"sceNet_Library",
 	"sceSsl_Module",
+	"sceDEFLATE_Library",
+	"sceMD5_Library",
 };
 
 struct VarSymbolImport {
@@ -1059,6 +1065,31 @@ static bool KernelImportModuleFuncs(Module *module, u32 *firstImportStubAddr, bo
 	return true;
 }
 
+static int gzipDecompress(u8 *OutBuffer, int OutBufferLength, u8 *InBuffer) {
+	int err;
+	z_stream stream;
+	u8 *outBufferPtr;
+
+	outBufferPtr = OutBuffer;
+	stream.next_in = InBuffer;
+	stream.avail_in = (uInt)OutBufferLength;
+	stream.next_out = outBufferPtr;
+	stream.avail_out = (uInt)OutBufferLength;
+	stream.zalloc = (alloc_func)0;
+	stream.zfree = (free_func)0;
+	err = inflateInit2(&stream, 16+MAX_WBITS);
+	if (err != Z_OK) {
+		return -1;
+	}
+	err = inflate(&stream, Z_FINISH);
+	if (err != Z_STREAM_END) {
+		inflateEnd(&stream);
+		return -2;
+	}
+	inflateEnd(&stream);
+	return stream.total_out;
+}
+
 static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAddress, bool fromTop, std::string *error_string, u32 *magic, u32 &error) {
 	Module *module = new Module;
 	kernelObjects.Create(module);
@@ -1096,6 +1127,7 @@ static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAdd
 		}
 
 		const u8 *in = ptr;
+		const auto isGzip = head->comp_attribute & 1;
 		// Kind of odd.
 		u32 size = head->psp_size;
 		if (size > elfSize) {
@@ -1104,11 +1136,12 @@ static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAdd
 			kernelObjects.Destroy<Module>(module->GetUID());
 			return nullptr;
 		}
-		newptr = new u8[std::max(head->elf_size, head->psp_size)];
+		const auto maxElfSize = std::max(head->elf_size, head->psp_size);
+		newptr = new u8[maxElfSize];
 		ptr = newptr;
 		magicPtr = (u32_le *)ptr;
 		int ret = pspDecryptPRX(in, (u8*)ptr, head->psp_size);
-		if (ret == MISSING_KEY) {
+		if (reportedModule) {
 			// This should happen for all "kernel" modules.
 			*error_string = "Missing key";
 			delete [] newptr;
@@ -1148,6 +1181,15 @@ static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAdd
 		} else {
 			// TODO: Is this right?
 			module->nm.bss_size = head->bss_size;
+
+			// decompress if required
+			if (isGzip)
+			{
+				auto temp = new u8[ret];
+				memcpy(temp, ptr, ret);
+				gzipDecompress((u8 *)ptr, maxElfSize, temp);
+				delete[] temp;
+			}
 
 			// If we've made it this far, it should be safe to dump.
 			if (g_Config.bDumpDecryptedEboot) {
@@ -1275,6 +1317,11 @@ static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAdd
 			u32 start = reader.GetSectionAddr(id);
 			// Note: scan end is inclusive.
 			u32 end = start + reader.GetSectionSize(id) - 4;
+			u32 len = end + 4 - start;
+			if (!Memory::IsValidRange(start, len)) {
+				ERROR_LOG(LOADER, "Bad section %08x (len %08x) of section %d", start, len, id);
+				continue;
+			}
 
 			if (start < module->textStart)
 				module->textStart = start;
@@ -1290,16 +1337,21 @@ static Module *__KernelLoadELFFromPtr(const u8 *ptr, size_t elfSize, u32 loadAdd
 		if (scan && codeSections.empty()) {
 			u32 scanStart = module->textStart;
 			u32 scanEnd = module->textEnd;
-			// Skip the exports and imports sections, they're not code.
-			if (scanEnd >= std::min(modinfo->libent, modinfo->libstub)) {
-				insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, std::min(modinfo->libent, modinfo->libstub) - 4, insertSymbols);
-				scanStart = std::min(modinfo->libentend, modinfo->libstubend);
+
+			if (Memory::IsValidRange(scanStart, scanEnd - scanStart)) {
+				// Skip the exports and imports sections, they're not code.
+				if (scanEnd >= std::min(modinfo->libent, modinfo->libstub)) {
+					insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, std::min(modinfo->libent, modinfo->libstub) - 4, insertSymbols);
+					scanStart = std::min(modinfo->libentend, modinfo->libstubend);
+				}
+				if (scanEnd >= std::max(modinfo->libent, modinfo->libstub)) {
+					insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, std::max(modinfo->libent, modinfo->libstub) - 4, insertSymbols);
+					scanStart = std::max(modinfo->libentend, modinfo->libstubend);
+				}
+				insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, scanEnd, insertSymbols);
+			} else {
+				ERROR_LOG(LOADER, "Bad text scan range %08x-%08x", scanStart, scanEnd);
 			}
-			if (scanEnd >= std::max(modinfo->libent, modinfo->libstub)) {
-				insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, std::max(modinfo->libent, modinfo->libstub) - 4, insertSymbols);
-				scanStart = std::max(modinfo->libentend, modinfo->libstubend);
-			}
-			insertSymbols = MIPSAnalyst::ScanForFunctions(scanStart, scanEnd, insertSymbols);
 		}
 
 		if (scan) {
@@ -1625,6 +1677,7 @@ bool __KernelLoadExec(const char *filename, u32 paramPtr, std::string *error_str
 			if (param_argp) delete[] param_argp;
 			if (param_key) delete[] param_key;
 		}
+		__KernelShutdown();
 		return false;
 	}
 
@@ -1933,7 +1986,8 @@ static void sceKernelStartModule(u32 moduleId, u32 argsize, u32 argAddr, u32 ret
 		if (module->nm.module_start_func != 0 && module->nm.module_start_func != (u32)-1)
 		{
 			entryAddr = module->nm.module_start_func;
-			attribute = module->nm.module_start_thread_attr;
+			if (module->nm.module_start_thread_attr != 0)
+				attribute = module->nm.module_start_thread_attr;
 		}
 		else if ((entryAddr == (u32)-1) || entryAddr == module->memoryBlockAddr - 1)
 		{
@@ -1966,7 +2020,7 @@ static void sceKernelStartModule(u32 moduleId, u32 argsize, u32 argAddr, u32 ret
 				stacksize = module->nm.module_start_thread_stacksize;
 			}
 
-			SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0);
+			SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, entryAddr, priority, stacksize, attribute, 0, (module->nm.attribute & 0x1000) != 0);
 			__KernelStartThreadValidate(threadID, argsize, argAddr);
 			__KernelSetThreadRA(threadID, NID_MODULERETURN);
 			__KernelWaitCurThread(WAITTYPE_MODULE, moduleId, 1, 0, false, "started module");
@@ -2048,7 +2102,7 @@ static u32 sceKernelStopModule(u32 moduleId, u32 argSize, u32 argAddr, u32 retur
 
 	if (Memory::IsValidAddress(stopFunc))
 	{
-		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, stopFunc, priority, stacksize, attr, 0);
+		SceUID threadID = __KernelCreateThread(module->nm.name, moduleId, stopFunc, priority, stacksize, attr, 0, (module->nm.attribute & 0x1000) != 0);
 		__KernelStartThreadValidate(threadID, argSize, argAddr);
 		__KernelSetThreadRA(threadID, NID_MODULERETURN);
 		__KernelWaitCurThread(WAITTYPE_MODULE, moduleId, 1, 0, false, "stopped module");
@@ -2131,7 +2185,7 @@ u32 hleKernelStopUnloadSelfModuleWithOrWithoutStatus(u32 exitCode, u32 argSize, 
 		}
 
 		if (Memory::IsValidAddress(stopFunc)) {
-			SceUID threadID = __KernelCreateThread(module->nm.name, moduleID, stopFunc, priority, stacksize, attr, 0);
+			SceUID threadID = __KernelCreateThread(module->nm.name, moduleID, stopFunc, priority, stacksize, attr, 0, (module->nm.attribute & 0x1000) != 0);
 			__KernelStartThreadValidate(threadID, argSize, argp);
 			__KernelSetThreadRA(threadID, NID_MODULERETURN);
 			__KernelWaitCurThread(WAITTYPE_MODULE, moduleID, 1, 0, false, "unloadstopped module");

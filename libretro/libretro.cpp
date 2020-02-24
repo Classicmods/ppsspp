@@ -167,12 +167,11 @@ static RetroOption<CPUCore> ppsspp_cpu_core("ppsspp_cpu_core", "CPU Core", { { "
 static RetroOption<int> ppsspp_locked_cpu_speed("ppsspp_locked_cpu_speed", "Locked CPU Speed", { { "off", 0 }, { "222MHz", 222 }, { "266MHz", 266 }, { "333MHz", 333 } });
 static RetroOption<int> ppsspp_language("ppsspp_language", "Language", { { "automatic", -1 }, { "english", PSP_SYSTEMPARAM_LANGUAGE_ENGLISH }, { "japanese", PSP_SYSTEMPARAM_LANGUAGE_JAPANESE }, { "french", PSP_SYSTEMPARAM_LANGUAGE_FRENCH }, { "spanish", PSP_SYSTEMPARAM_LANGUAGE_SPANISH }, { "german", PSP_SYSTEMPARAM_LANGUAGE_GERMAN }, { "italian", PSP_SYSTEMPARAM_LANGUAGE_ITALIAN }, { "dutch", PSP_SYSTEMPARAM_LANGUAGE_DUTCH }, { "portuguese", PSP_SYSTEMPARAM_LANGUAGE_PORTUGUESE }, { "russian", PSP_SYSTEMPARAM_LANGUAGE_RUSSIAN }, { "korean", PSP_SYSTEMPARAM_LANGUAGE_KOREAN }, { "chinese_traditional", PSP_SYSTEMPARAM_LANGUAGE_CHINESE_TRADITIONAL }, { "chinese_simplified", PSP_SYSTEMPARAM_LANGUAGE_CHINESE_SIMPLIFIED } });
 static RetroOption<int> ppsspp_rendering_mode("ppsspp_rendering_mode", "Rendering Mode", { { "buffered", FB_BUFFERED_MODE }, { "nonbuffered", FB_NON_BUFFERED_MODE } });
-static RetroOption<bool> ppsspp_true_color("ppsspp_true_color", "True Color Depth", true);
 static RetroOption<bool> ppsspp_auto_frameskip("ppsspp_auto_frameskip", "Auto Frameskip", false);
 static RetroOption<int> ppsspp_frameskip("ppsspp_frameskip", "Frameskip", 0, 10);
-static RetroOption<int> ppsspp_force_max_fps("ppsspp_force_max_fps", "Force Max FPS", { { "disabled", 0 }, { "enabled", 60 } });
+static RetroOption<int> ppsspp_frameskiptype("ppsspp_frameskiptype", "Frameskip Type", 0, 10);
 static RetroOption<int> ppsspp_audio_latency("ppsspp_audio_latency", "Audio latency", { "low", "medium", "high" });
-static RetroOption<int> ppsspp_internal_resolution("ppsspp_internal_resolution", "Internal Resolution", 1, { "480x272", "960x544", "1440x816", "1920x1088", "2400x1360", "2880x1632", "3360x1904", "3840x2176", "4320x2448", "4800x2720" });
+static RetroOption<int> ppsspp_internal_resolution("ppsspp_internal_resolution", "Internal Resolution (restart)", 1, { "480x272", "960x544", "1440x816", "1920x1088", "2400x1360", "2880x1632", "3360x1904", "3840x2176", "4320x2448", "4800x2720" });
 static RetroOption<int> ppsspp_button_preference("ppsspp_button_preference", "Confirmation Button", { { "cross", PSP_SYSTEMPARAM_BUTTON_CROSS }, { "circle", PSP_SYSTEMPARAM_BUTTON_CIRCLE } });
 static RetroOption<bool> ppsspp_fast_memory("ppsspp_fast_memory", "Fast Memory (Speedhack)", true);
 static RetroOption<bool> ppsspp_block_transfer_gpu("ppsspp_block_transfer_gpu", "Block Transfer GPU", true);
@@ -184,10 +183,9 @@ static RetroOption<bool> ppsspp_texture_deposterize("ppsspp_texture_deposterize"
 static RetroOption<bool> ppsspp_texture_replacement("ppsspp_texture_replacement", "Texture Replacement", false);
 static RetroOption<bool> ppsspp_gpu_hardware_transform("ppsspp_gpu_hardware_transform", "GPU Hardware T&L", true);
 static RetroOption<bool> ppsspp_vertex_cache("ppsspp_vertex_cache", "Vertex Cache (Speedhack)", true);
-static RetroOption<bool> ppsspp_separate_io_thread("ppsspp_separate_io_thread", "IO Threading", false);
 static RetroOption<bool> ppsspp_unsafe_func_replacements("ppsspp_unsafe_func_replacements", "Unsafe FuncReplacements", true);
-static RetroOption<bool> ppsspp_sound_speedhack("ppsspp_sound_speedhack", "Sound Speedhack", false);
 static RetroOption<bool> ppsspp_cheats("ppsspp_cheats", "Internal Cheats Support", false);
+static RetroOption<IOTimingMethods> ppsspp_io_timing_method("ppsspp_io_timing_method", "IO Timing Method", { { "Fast", IOTimingMethods::IOTIMING_FAST }, { "Host", IOTimingMethods::IOTIMING_HOST }, { "Simulate UMD delays", IOTimingMethods::IOTIMING_REALISTIC } });
 
 void retro_set_environment(retro_environment_t cb) {
 	std::vector<retro_variable> vars;
@@ -195,10 +193,9 @@ void retro_set_environment(retro_environment_t cb) {
 	vars.push_back(ppsspp_locked_cpu_speed.GetOptions());
 	vars.push_back(ppsspp_language.GetOptions());
 	vars.push_back(ppsspp_rendering_mode.GetOptions());
-	vars.push_back(ppsspp_true_color.GetOptions());
 	vars.push_back(ppsspp_auto_frameskip.GetOptions());
 	vars.push_back(ppsspp_frameskip.GetOptions());
-	vars.push_back(ppsspp_force_max_fps.GetOptions());
+	vars.push_back(ppsspp_frameskiptype.GetOptions());
 	vars.push_back(ppsspp_audio_latency.GetOptions());
 	vars.push_back(ppsspp_internal_resolution.GetOptions());
 	vars.push_back(ppsspp_button_preference.GetOptions());
@@ -212,10 +209,9 @@ void retro_set_environment(retro_environment_t cb) {
 	vars.push_back(ppsspp_texture_replacement.GetOptions());
 	vars.push_back(ppsspp_gpu_hardware_transform.GetOptions());
 	vars.push_back(ppsspp_vertex_cache.GetOptions());
-	vars.push_back(ppsspp_separate_io_thread.GetOptions());
 	vars.push_back(ppsspp_unsafe_func_replacements.GetOptions());
-	vars.push_back(ppsspp_sound_speedhack.GetOptions());
 	vars.push_back(ppsspp_cheats.GetOptions());
+	vars.push_back(ppsspp_io_timing_method.GetOptions());
 	vars.push_back({});
 
 	environ_cb = cb;
@@ -268,29 +264,27 @@ static void check_variables(CoreParameter &coreParam) {
 	ppsspp_vertex_cache.Update(&g_Config.bVertexCache);
 	ppsspp_gpu_hardware_transform.Update(&g_Config.bHardwareTransform);
 	ppsspp_frameskip.Update(&g_Config.iFrameSkip);
+	ppsspp_frameskiptype.Update(&g_Config.iFrameSkipType);
 	ppsspp_audio_latency.Update(&g_Config.iAudioLatency);
-	ppsspp_true_color.Update(&g_Config.bTrueColor);
 	ppsspp_auto_frameskip.Update(&g_Config.bAutoFrameSkip);
 	ppsspp_block_transfer_gpu.Update(&g_Config.bBlockTransferGPU);
 	ppsspp_texture_filtering.Update(&g_Config.iTexFiltering);
 	ppsspp_texture_anisotropic_filtering.Update(&g_Config.iAnisotropyLevel);
 	ppsspp_texture_deposterize.Update(&g_Config.bTexDeposterize);
 	ppsspp_texture_replacement.Update(&g_Config.bReplaceTextures);
-	ppsspp_separate_io_thread.Update(&g_Config.bSeparateIOThread);
 	ppsspp_unsafe_func_replacements.Update(&g_Config.bFuncReplacements);
-	ppsspp_sound_speedhack.Update(&g_Config.bSoundSpeedHack);
 	ppsspp_cheats.Update(&g_Config.bEnableCheats);
 	ppsspp_locked_cpu_speed.Update(&g_Config.iLockedCPUSpeed);
 	ppsspp_rendering_mode.Update(&g_Config.iRenderingMode);
-	ppsspp_force_max_fps.Update(&g_Config.iForceMaxEmulatedFPS);
 	ppsspp_cpu_core.Update((CPUCore *)&g_Config.iCpuCore);
+	ppsspp_io_timing_method.Update((IOTimingMethods *)&g_Config.iIOTimingMethod);
 
 	ppsspp_language.Update(&g_Config.iLanguage);
 	if (g_Config.iLanguage < 0) {
 		g_Config.iLanguage = get_language_auto();
 	}
 
-	if (ppsspp_internal_resolution.Update(&g_Config.iInternalResolution)) {
+	if (!PSP_IsInited() && ppsspp_internal_resolution.Update(&g_Config.iInternalResolution)) {
 		coreParam.pixelWidth = coreParam.renderWidth = g_Config.iInternalResolution * 480;
 		coreParam.pixelHeight = coreParam.renderHeight = g_Config.iInternalResolution * 272;
 		if (gpu) {
@@ -324,9 +318,13 @@ void retro_init(void) {
 	g_Config.bFrameSkipUnthrottle = false;
 	g_Config.bMemStickInserted = PSP_MEMORYSTICK_STATE_INSERTED;
 	g_Config.iGlobalVolume = VOLUME_MAX - 1;
+	g_Config.iAltSpeedVolume = -1;
 	g_Config.bEnableSound = true;
 	g_Config.bAudioResampler = false;
 	g_Config.iCwCheatRefreshRate = 60;
+
+	g_Config.iFirmwareVersion = PSP_DEFAULT_FIRMWARE;
+	g_Config.iPSPModel = PSP_MODEL_SLIM;
 
 	LogManager::Init();
 
@@ -453,6 +451,7 @@ void EmuThreadStop() {
 		// Need to keep eating frames to allow the EmuThread to exit correctly.
 		continue;
 	}
+
 	emuThread.join();
 	emuThread = std::thread();
 	ctx->ThreadEnd();
@@ -462,8 +461,11 @@ void EmuThreadPause() {
 	if (emuThreadState != EmuThreadState::RUNNING) {
 		return;
 	}
+
 	emuThreadState = EmuThreadState::PAUSE_REQUESTED;
-	ctx->ThreadFrame();
+
+	ctx->ThreadFrame(); // Eat 1 frame
+
 	while (emuThreadState != EmuThreadState::PAUSED) {
 		sleep_ms(1);
 	}
@@ -485,8 +487,10 @@ bool retro_load_game(const struct retro_game_info *game) {
 		{ 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R, "R" },
 		{ 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT, "Select" },
 		{ 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START, "Start" },
-		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X, "Analog X" },
-		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, "Analog Y" },
+		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X, "Right Analog X" },
+		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y, "Right Analog Y" },
+		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X, "Left Analog X" },
+		{ 0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y, "Left Analog Y" },
 		{ 0 },
 	};
 	environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
@@ -644,8 +648,10 @@ static void retro_input(void) {
 		}
 	}
 
-	__CtrlSetAnalogX(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X) / 32768.0f);
-	__CtrlSetAnalogY(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y) / -32768.0f);
+	__CtrlSetAnalogX(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X) / 32768.0f, CTRL_STICK_LEFT);
+	__CtrlSetAnalogY(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y) / -32768.0f, CTRL_STICK_LEFT);
+	__CtrlSetAnalogX(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X) / 32768.0f, CTRL_STICK_RIGHT);
+	__CtrlSetAnalogY(input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y) / -32768.0f, CTRL_STICK_RIGHT);
 }
 
 void retro_run(void) {
@@ -675,6 +681,11 @@ void retro_run(void) {
 	retro_input();
 
 	if (useEmuThread) {
+		if(emuThreadState == EmuThreadState::PAUSED || emuThreadState == EmuThreadState::PAUSE_REQUESTED) {
+			ctx->SwapBuffers();
+			return;
+		}
+
 		if (emuThreadState != EmuThreadState::RUNNING) {
 			EmuThreadStart();
 		}
@@ -705,19 +716,48 @@ struct SaveStart {
 } // namespace SaveState
 
 size_t retro_serialize_size(void) {
+	// TODO: Libretro API extension to use the savestate queue
+	if (useEmuThread) {
+		EmuThreadPause();
+	}
+
 	SaveState::SaveStart state;
-	return (CChunkFileReader::MeasurePtr(state) + 0x800000) & ~0x7FFFFF;
+	return (CChunkFileReader::MeasurePtr(state) + 0x800000) & ~0x7FFFFF; // We don't unpause intentionally
 }
 
 bool retro_serialize(void *data, size_t size) {
+	// TODO: Libretro API extension to use the savestate queue
+	if (useEmuThread) {
+		EmuThreadPause(); // Does nothing if already paused
+	}
+
 	SaveState::SaveStart state;
 	assert(CChunkFileReader::MeasurePtr(state) <= size);
-	return CChunkFileReader::SavePtr((u8 *)data, state) == CChunkFileReader::ERROR_NONE;
+	bool retVal = CChunkFileReader::SavePtr((u8 *)data, state) == CChunkFileReader::ERROR_NONE;
+
+	if (useEmuThread) {
+		EmuThreadStart();
+		sleep_ms(4);
+	}
+
+	return retVal;
 }
 
 bool retro_unserialize(const void *data, size_t size) {
+	// TODO: Libretro API extension to use the savestate queue
+	if (useEmuThread) {
+		EmuThreadPause(); // Does nothing if already paused
+	}
+
 	SaveState::SaveStart state;
-	return CChunkFileReader::LoadPtr((u8 *)data, state) == CChunkFileReader::ERROR_NONE;
+	bool retVal = CChunkFileReader::LoadPtr((u8 *)data, state) == CChunkFileReader::ERROR_NONE;
+
+	if (useEmuThread) {
+		EmuThreadStart();
+		sleep_ms(4);
+	}
+
+	return retVal;
 }
 
 void *retro_get_memory_data(unsigned id) {
@@ -746,8 +786,15 @@ int System_GetPropertyInt(SystemProperty prop) {
 	switch (prop) {
 	case SYSPROP_AUDIO_SAMPLE_RATE:
 		return SAMPLERATE;
+	default:
+		return -1;
+	}
+}
+
+float System_GetPropertyFloat(SystemProperty prop) {
+	switch (prop) {
 	case SYSPROP_DISPLAY_REFRESH_RATE:
-		return 60000;
+		return 60.f;
 	default:
 		return -1;
 	}
@@ -759,3 +806,7 @@ void NativeUpdate() {}
 void NativeRender(GraphicsContext *graphicsContext) {}
 void NativeResized() {}
 bool System_InputBoxGetWString(const wchar_t *title, const std::wstring &defaultvalue, std::wstring &outvalue) { return false; }
+
+#if PPSSPP_PLATFORM(ANDROID) || PPSSPP_PLATFORM(IOS)
+std::vector<std::string> __cameraGetDeviceList() { return std::vector<std::string>(); }
+#endif
