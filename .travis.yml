@@ -45,8 +45,7 @@ matrix:
            APP_ABI=armeabi-v7a
            LIBRETRO=TRUE
            platform=classic_armv8_a35
-           
-     - os: linux
+    - os: linux
       compiler: "gcc"
       env: PPSSPP_BUILD_TYPE=Linux
            APP_ABI=armeabi-v7a
